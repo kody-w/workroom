@@ -94,7 +94,7 @@
   <div class="grow"></div>
   <button id="export" class="ghost">Export</button>
   <button id="import" class="ghost">Import</button>
-  <button id="reset" class="ghost" title="Start a new stream — the old one is exported first">Reset</button>
+  <button id="reset" class="ghost" title="Start a new stream. This does NOT export the old one — use Export first.">Reset</button>
 </header>
 
 <main>
@@ -146,7 +146,7 @@
 const SPEC = 'rapp/1';
 const KIND = 'memory.save';              // a registered kind (§13). Nothing here invents one.
 const OWNER = 'kody-w', SLUG = 'workroom';
-const LS = { stream: 'workroom.stream', frames: 'workroom.frames' };
+const LS = { stream: 'workroom.stream', frames: 'workroom.frames', head: 'workroom.head' };
 const LANES = [
   { id: 'now',     name: 'Now' },
   { id: 'next',    name: 'Next' },
@@ -259,6 +259,32 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); retur
 // app announcing that nothing had changed. So: snapshot, write both, and on any
 // failure put back exactly what was there. Restoring a value that already fitted
 // cannot itself overflow.
+// §7.6 — a reader MUST persist the highest (seq, frame_hash) it has verified, and
+// MUST refuse a presented head with a lower seq, or a different frame_hash at a seq
+// it has already verified. Without this the app cannot tell a rollback or a fork
+// from an ordinary import: both are perfectly valid chains, and the whole
+// append-only claim rests on refusing them.
+function rememberHead(list, stream) {
+  const h = list[list.length - 1];
+  if (h) save(LS.head, { stream_id: stream, seq: h.seq, frame_hash: h.frame_hash });
+}
+// Returns null when the candidate may replace what we have, or a reason to refuse.
+function headObjection(list, stream) {
+  const head = load(LS.head);
+  if (!head || head.stream_id !== stream) return null;      // a different stream is a different record
+  const cand = list[list.length - 1];
+  if (!cand) return 'that chain is empty';
+  if (cand.seq < head.seq) {
+    return `that is an older copy of this stream (seq ${cand.seq}, and ${head.seq} has already been verified here) — `
+         + 'importing it would roll the record back';
+  }
+  const at = list[head.seq];
+  if (!at || at.frame_hash !== head.frame_hash) {
+    return `that chain forks from this one at seq ${head.seq} — the frame verified here is not the frame it carries`;
+  }
+  return null;
+}
+
 function commit(nextFrames, nextStream) {
   let prevF = null, prevS = null;
   try { prevF = localStorage.getItem(LS.frames); prevS = localStorage.getItem(LS.stream); } catch (e) { return false; }
@@ -322,10 +348,20 @@ async function append(payload) {
   // Another tab of this same file holds its own copy of the chain. Writing our
   // whole array over theirs would delete frames they had already appended, with
   // no error anywhere — so notice it and refuse rather than destroy their work.
-  const onDisk = load(LS.frames);
-  if (Array.isArray(onDisk) && onDisk.length > frames.length) {
-    stick('another tab has appended to this chain — reload before making more changes, '
-        + 'or this tab would overwrite what it wrote.');
+  // A compare-and-swap, not a length test. Comparing lengths established "the disk
+  // chain is not longer than mine" and concluded "the disk chain IS mine" — so
+  // another tab's Reset or import, which leaves a shorter or equal chain, was
+  // overwritten without a word. What has to match is identity: the same stream and
+  // the same head.
+  const diskFrames = load(LS.frames);
+  const diskStream = load(LS.stream);
+  const mineHead = frames.length ? frames[frames.length - 1].frame_hash : null;
+  const diskHead = Array.isArray(diskFrames) && diskFrames.length
+    ? diskFrames[diskFrames.length - 1].frame_hash : null;
+  const diskEmpty = !Array.isArray(diskFrames) || diskFrames.length === 0;
+  if (!(diskEmpty && frames.length === 0) && (diskStream !== streamId || diskHead !== mineHead)) {
+    stick('another tab has changed this record — reload before making more changes. '
+        + 'Writing from here would overwrite what it wrote.');
     render();
     return null;
   }
@@ -341,6 +377,7 @@ async function append(payload) {
     return null;
   }
   unstick();                      // the write landed, so the warning is no longer true
+  rememberHead(frames, streamId);
   board = project(frames);
   render();
   return f;
@@ -367,6 +404,7 @@ function isPlainObject(v) {
 async function verifyChain(list, expectStream) {
   const problems = [];
   const seen = new Set();
+  const liveCards = new Set();
   let prev = null;
   if (!Array.isArray(list)) return ['that is not a chain'];
   for (let i = 0; i < list.length; i++) {
@@ -410,6 +448,19 @@ async function verifyChain(list, expectStream) {
         }
         for (const k of ['title', 'note', 'who', 'titleAt']) {
           if (k in p && typeof p[k] !== 'string') problems.push(`frame ${i}: ${k} is not a string`);
+        }
+      }
+      // ...and the card's life has to make sense, or the board projects a lane count
+      // with nothing in it: an id added twice, or moved after it was removed.
+      if (isPlainObject(p) && typeof p.card === 'string' && p.card) {
+        if (p.event === 'card.added') {
+          if (liveCards.has(p.card)) problems.push(`frame ${i}: card ${p.card.slice(0, 6)} was already added`);
+          liveCards.add(p.card);
+        } else if (p.event === 'card.removed') {
+          if (!liveCards.has(p.card)) problems.push(`frame ${i}: removes a card that is not there`);
+          liveCards.delete(p.card);
+        } else if (p.event === 'card.moved' || p.event === 'card.edited') {
+          if (!liveCards.has(p.card)) problems.push(`frame ${i}: ${p.event} on a card that is not there`);
         }
       }
       // §7.5 step 4: time does not run backwards along a chain
@@ -593,26 +644,26 @@ function newId() {
   return [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 async function addCard(lane, title) {
-  await append({ event: 'card.added', card: newId(), lane, title, note: '', who: '' });
-  setStatus('added', 'ok');
+  if (await append({ event: 'card.added', card: newId(), lane, title, note: '', who: '' })) setStatus('added', 'ok');
 }
 async function move(id, lane) {
   const c = board.cards[id]; if (!c) return;
-  await append({ event: 'card.moved', card: id, lane, titleAt: c.title });
-  setStatus('moved', 'ok');
+  if (await append({ event: 'card.moved', card: id, lane, titleAt: c.title })) setStatus('moved', 'ok');
 }
 async function removeCard(id) {
   const c = board.cards[id]; if (!c) return;
-  await append({ event: 'card.removed', card: id, titleAt: c.title });
-  setStatus('removed — the frame that added it is still in the chain', 'ok');
+  if (await append({ event: 'card.removed', card: id, titleAt: c.title })) {
+    setStatus('removed — the frame that added it is still in the chain', 'ok');
+  }
 }
 async function editCard(id) {
   const c = board.cards[id]; if (!c) return;
   const title = prompt('Title', c.title); if (title === null) return;
   const note = prompt('Note (optional)', c.note); if (note === null) return;
   const who = prompt('Who (initials, optional)', c.who); if (who === null) return;
-  await append({ event: 'card.edited', card: id, title: title.trim(), note: note.trim(), who: who.trim(), titleAt: c.title });
-  setStatus('edited', 'ok');
+  if (await append({ event: 'card.edited', card: id, title: title.trim(), note: note.trim(), who: who.trim(), titleAt: c.title })) {
+    setStatus('edited', 'ok');
+  }
 }
 
 /* ── io ──────────────────────────────────────────────────────────────────── */
@@ -651,6 +702,9 @@ $('import').onclick = () => {
     catch (e) { problems = ['could not be verified: ' + e.message]; }
     if (problems.length) { setStatus('refused: ' + problems[0], 'bad'); return; }
 
+    const objection = headObjection(data.frames, data.stream_id);
+    if (objection) { setStatus('refused: ' + objection, 'bad'); return; }
+
     let nextBoard;
     try { nextBoard = project(data.frames); }
     catch (e) { setStatus('refused: those frames cannot be replayed — ' + e.message, 'bad'); return; }
@@ -660,14 +714,15 @@ $('import').onclick = () => {
       setStatus('refused: could not write it to storage, so nothing was changed', 'bad'); return;
     }
     frames = data.frames; streamId = data.stream_id; board = nextBoard;
+    rememberHead(frames, streamId);
     unstick();
     $('io').close(); $('io-ok').textContent = 'Close'; $('io-ok').onclick = () => $('io').close();
     render(); setStatus(`imported ${frames.length} frames, all verified`, 'ok');
   };
 };
 $('reset').onclick = async () => {
-  if (!confirm('Start a new stream? Export first if you want to keep this one.')) return;
-  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
+  if (!confirm('Start a new stream?\n\nThis discards the current record from this browser. It is NOT exported for you — press Cancel and use Export if you want to keep it.')) return;
+  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream); localStorage.removeItem(LS.head);
   frames = []; streamId = await mintStream();
   if (!save(LS.stream, streamId)) { stick('storage is not writable here — a new stream cannot be kept'); return; }
   unstick();
@@ -703,18 +758,44 @@ $('tab-about').onclick = () => {
 
 /* ── boot ────────────────────────────────────────────────────────────────── */
 (async function boot() {
-  streamId = load(LS.stream);
   frames = load(LS.frames) || [];
-  if (!streamId) { streamId = await mintStream(); save(LS.stream, streamId); }
-  if (!frames.length) await append({ event: 'room.opened', title: 'The Workroom' });
-  board = project(frames);
-  render();
+  streamId = load(LS.stream);
+  // The chain declares which stream it belongs to. Minting a fresh id over frames
+  // that already carry their own branded a perfectly good record as broken —
+  // every frame then "belongs to a different stream" forever.
+  if (!streamId && frames.length && frames[0] && typeof frames[0].stream_id === 'string') {
+    streamId = frames[0].stream_id;
+    save(LS.stream, streamId);
+  }
+  if (!streamId) {
+    streamId = await mintStream();
+    if (!save(LS.stream, streamId)) stick('storage is not writable here — nothing will be kept.');
+  }
+
+  // Verify BEFORE replaying. project() and render() assume a chain verifyChain has
+  // already vouched for, so running them first meant a corrupt record killed the
+  // page instead of being reported by the code written to report it.
   let problems;
   try { problems = await verifyChain(frames, streamId); }
   catch (e) { problems = ['could not be verified: ' + e.message]; }
-  setStatus(problems.length ? `chain has ${problems.length} problem(s): ${problems[0]}`
-                            : `${frames.length} frames, verified on load`,
-            problems.length ? 'bad' : 'ok');
+
+  if (frames.length && problems.length) {
+    board = { cards: {}, order: {} };
+    LANES.forEach(l => board.order[l.id] = []);
+    render();
+    setStatus('this record does not verify — ' + problems[0]
+            + '. Nothing has been changed; export it before doing anything else.', 'bad');
+    return;
+  }
+
+  if (!frames.length) {
+    if (!await append({ event: 'room.opened', title: 'The Workroom' })) return;
+  } else {
+    rememberHead(frames, streamId);
+  }
+  board = project(frames);
+  render();
+  setStatus(frames.length + ' frames, verified on load', 'ok');
 })();
 </script>
 </body>

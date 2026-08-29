@@ -17,7 +17,10 @@ const out = [];
 const say = (k, v) => { out.push([k, v]); console.log('  ' + k.padEnd(38) + v); };
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+// an explicit context, so a second tab later shares this one's storage — that is
+// the whole point of the cross-tab check at the end
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+const page = await ctx.newPage();
 page.on('pageerror', e => console.log('  [page error] ' + e.message));
 await page.goto(URL);
 await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
@@ -87,9 +90,19 @@ say('tampered chain is caught', /problem|does not match/i.test(tampered) ? 'yes 
 
 /* ── the failures the app has to SURVIVE, not merely pass ───────────────── */
 
-// a full or blocked store must refuse the change, not pretend to keep it
+// a full or blocked store must refuse the change, not pretend to keep it.
+// Start from a clean stream: the tamper test above deliberately left a corrupt
+// chain, and boot now refuses to replay one — so the board would be empty here
+// for the right reason and the counts below would measure nothing.
+// the queued handler installed for the edit prompts is still attached and accepts
+// a bare confirm() fine — a second handler would try to accept the same dialog twice
 await page.reload();
 await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.click('#reset');
+await page.waitForTimeout(300);
+await add(0, 'a clean card');
+await page.waitForTimeout(150);
+const cardsBefore = await page.locator('.card').count();
 const diskBefore = (await frames()).length;
 await page.evaluate(() => { localStorage.setItem = () => { throw new Error('QuotaExceededError'); }; });
 await add(0, 'this must not be silently dropped');
@@ -98,7 +111,7 @@ const diskAfter = (await page.evaluate(() => JSON.parse(localStorage.getItem('wo
 const memAfter = await page.evaluate(() => document.querySelectorAll('.card').length);
 const warned = /could not be written|refused/i.test(await status());
 say('dead store: disk unchanged', String(diskAfter === diskBefore));
-say('dead store: change refused, not kept', String(memAfter === 2));
+say('dead store: change refused, not kept', String(memAfter === cardsBefore));
 say('dead store: says so, stickily', String(warned));
 
 // an import that cannot even be canonicalized must leave the live chain alone
@@ -212,6 +225,43 @@ const afterF = await page.evaluate(() => localStorage.getItem('workroom.frames')
 const afterS = await page.evaluate(() => localStorage.getItem('workroom.stream'));
 say('half-write rolled back', String(afterF === beforeF && afterS === beforeS));
 await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// §7.6 — an OLDER copy of this same stream is a perfectly valid chain and must
+// still be refused: importing it would roll the record back and lose the frames
+// appended since. Every earlier pass hardened import against chains that are
+// invalid; this one is valid and must be refused anyway.
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.click('#reset'); await page.waitForTimeout(300);
+await add(0, 'first'); await add(0, 'second'); await page.waitForTimeout(150);
+const snapshot = await page.evaluate(() => JSON.stringify({
+  stream_id: JSON.parse(localStorage.getItem('workroom.stream')),
+  frames: JSON.parse(localStorage.getItem('workroom.frames')),
+}));
+await add(0, 'third'); await add(0, 'fourth'); await page.waitForTimeout(150);
+const framesNow = (await frames()).length;
+await page.click('#import'); await page.fill('#io-text', snapshot); await page.click('#io-ok');
+await page.waitForTimeout(400);
+const rollStatus = await status();
+say('rollback refused', /older copy|roll the record back/i.test(rollStatus) ? 'yes' : 'NO — it rolled back');
+say('rollback: frames kept', String((await frames()).length === framesNow));
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// a second tab that replaced the record must not be silently overwritten by this one
+// same CONTEXT, or the two pages get separate storage and share nothing
+const other = await ctx.newPage();
+await other.goto(URL);
+await other.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+other.on('dialog', d => d.accept());
+await other.click('#reset');                       // other tab mints a NEW, shorter stream
+await other.waitForTimeout(400);
+const otherStream = await other.evaluate(() => localStorage.getItem('workroom.stream'));
+await add(0, 'written from the stale tab');        // this tab still holds the old chain
+await page.waitForTimeout(300);
+const streamAfter = await page.evaluate(() => localStorage.getItem('workroom.stream'));
+say('stale tab did not overwrite', String(streamAfter === otherStream));
+say('stale tab was told why', /another tab/i.test(await status()) ? 'yes' : 'NO — it said nothing');
+await other.close();
 
 await page.screenshot({ path: join(here, 'shot.png'), fullPage: false });
 await browser.close();
