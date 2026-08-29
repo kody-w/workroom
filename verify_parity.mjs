@@ -31,6 +31,22 @@ const mod = await import('data:text/javascript,' + encodeURIComponent(
 ));
 const { canonical, H } = mod;
 
+/* ── the studio carries a copy; a copy that drifts is a second implementation ──
+   broadcast.html verifies every frame it receives, which is only meaningful if it
+   verifies them the same way. It cannot import from index.html (one is not a module
+   and both must work off a file:// URL), so it holds a copy — and a copy is only
+   safe if something fails when it drifts. */
+const studio = readFileSync(join(here, 'broadcast.html'), 'utf8');
+const sA = studio.indexOf('/* ── §4 canonicalization');
+const sB = studio.indexOf('/* ── state ');
+if (sA < 0 || sB < 0 || studio.slice(sA, sB) !== primitives) {
+  console.error('broadcast.html\'s copy of the primitives has drifted from index.html\'s.');
+  console.error('Two readers of the same wire must canonicalize identically, or the studio');
+  console.error('accepts frames the app refuses. Re-copy the block between the two markers.');
+  process.exit(2);
+}
+console.log('  the studio\'s copy of the primitives is byte-identical to the app\'s\n');
+
 /* ── the cases ────────────────────────────────────────────────────────────── */
 const cases = {
   // the app's own genesis payload

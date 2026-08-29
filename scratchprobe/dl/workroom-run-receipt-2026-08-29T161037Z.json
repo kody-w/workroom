@@ -1,0 +1,395 @@
+{
+  "run": "workroom dry run",
+  "at": "2026-08-29T16:10:37Z",
+  "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+  "frames_before": 16,
+  "frames_after": 30,
+  "verified": true,
+  "problems": [],
+  "artifacts": [
+    {
+      "card": "a183ea6c41bc2c7c",
+      "title": "Open the PRs against current main",
+      "who": "@scout",
+      "file": "workroom-open-the-prs-against-current-main.md",
+      "sha256": "1c262a281ffef978de65966f480dad29be497148bf3bdea61ff257c31bfab958",
+      "frames": [
+        {
+          "seq": 16,
+          "frame_hash": "4ed5d6a281ce4be66128ca7ddfb59b6022fc077257feb2dd445777ad6422ce41"
+        },
+        {
+          "seq": 17,
+          "frame_hash": "3040819fec55589e516c1835675703e0f68a42d7f34a3e20aa0423cc87b6661a"
+        },
+        {
+          "seq": 18,
+          "frame_hash": "fa5ccf6dee8c8ffa0a96f59dc9af63b6db808214cd2e2ebdce1fe63a08d37274"
+        }
+      ]
+    },
+    {
+      "card": "1acdbe2097452022",
+      "title": "Prove the tests are not theatre",
+      "who": "@reviewer",
+      "file": "workroom-prove-the-tests-are-not-theatre.md",
+      "sha256": "15189373b1ae2180403c388fc4d5ed5e1d1f744330fdd03d2b5b5fdeaccbf850",
+      "frames": [
+        {
+          "seq": 19,
+          "frame_hash": "5ad91bc221239dd3cfb94de503fe6eec2bf80483dbdb63650a4977309193f104"
+        },
+        {
+          "seq": 20,
+          "frame_hash": "69cbc0e6d9335ae49a191bd4e2f9e35711d027e146c253671ba6e02e4cb6657c"
+        },
+        {
+          "seq": 21,
+          "frame_hash": "c423fd34cd81219643aab315f93a6c236e91ee1ca3d87a4954f517286dd2132a"
+        }
+      ]
+    },
+    {
+      "card": "2b4d750598bbdc3e",
+      "title": "Presence relay",
+      "who": "@triage",
+      "file": "workroom-presence-relay.md",
+      "sha256": "854234c63b3f7c2c1e9e20627c810503c18642b07becd0732f7f9326992128e4",
+      "frames": [
+        {
+          "seq": 22,
+          "frame_hash": "8c85c2cc115457945936bd5f065cfb4bc5f20a859bacbc68f9c050c31afac31b"
+        },
+        {
+          "seq": 23,
+          "frame_hash": "bf28b5356b7898c7a28d7cf520a29ed984c0a5b82ac441e793d2ec5e66f19ec9"
+        }
+      ]
+    },
+    {
+      "card": "099d488b51f1eeba",
+      "title": "Badges read 3 in every tab",
+      "who": "@scout",
+      "file": "workroom-badges-read-3-in-every-tab.md",
+      "sha256": "f89f2ddea18ca31ae913e828c5caa14a74c72e838c95d7362801ca03bc9d746a",
+      "frames": [
+        {
+          "seq": 24,
+          "frame_hash": "c58c0b79ebee3cbfacd5818ad4ea9f32d3ff54c859c7262b8a9cb304bb564a13"
+        },
+        {
+          "seq": 25,
+          "frame_hash": "f3ce0aec2d8f08e4be2d0b9d18af37976cd0dee62212fe018ae021290433aa3e"
+        }
+      ]
+    },
+    {
+      "card": "f9e62bbb3eead3c7",
+      "title": "Kill switch re-armed by its own work",
+      "who": "@reviewer",
+      "file": "workroom-kill-switch-re-armed-by-its-own-work.md",
+      "sha256": "4bb22f0de8fa56fa08f6d4df681b344cbc30eca45835f5d6e00602d23daeff39",
+      "frames": [
+        {
+          "seq": 26,
+          "frame_hash": "0a712185ee7a0c03af95e51260f8635dd0f9776c522b2771559e0595f9352b5a"
+        },
+        {
+          "seq": 27,
+          "frame_hash": "1455157c1a0e247a79d9c421368c1f2ca6e29b6274b0325b4ddf3e8c727197e9"
+        }
+      ]
+    },
+    {
+      "card": "7bda4c120f8ea670",
+      "title": "disposeObject releases a shared geometry",
+      "who": "@reviewer",
+      "file": "workroom-disposeobject-releases-a-shared-geometry.md",
+      "sha256": "3c45854a6044b1bd86399e00d25d218416ecd0453624b16f35c56ad425b044b0",
+      "frames": [
+        {
+          "seq": 28,
+          "frame_hash": "7c216419b21fb39b5c88ab046114cfdc7898ed7654a6da6de434df33314526be"
+        },
+        {
+          "seq": 29,
+          "frame_hash": "194e2c933333846ab23617478fedbb972da036e446e89e70605168f8f299222f"
+        }
+      ]
+    }
+  ],
+  "chain": [
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 16,
+      "utc": "2026-08-29T16:10:37.221Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "a183ea6c41bc2c7c",
+        "lane": "now",
+        "titleAt": "Open the PRs against current main",
+        "who": "@scout"
+      },
+      "payload_hash": "31742f3fd1f4fb9e68b50d8b61de9556a6a23a2816c53f6f4415b4ae0f78e18f",
+      "prev": "6c99888d89818225dcb9b9e49f90020094af8f6df706b5c487ef3125a7ed2c4b",
+      "prev_wave": null,
+      "frame_hash": "4ed5d6a281ce4be66128ca7ddfb59b6022fc077257feb2dd445777ad6422ce41",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 17,
+      "utc": "2026-08-29T16:10:37.873Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "a183ea6c41bc2c7c",
+        "title": "Open the PRs against current main",
+        "note": "pulled the sources and reconciled them",
+        "who": "@scout",
+        "titleAt": "Open the PRs against current main"
+      },
+      "payload_hash": "6f073d70f57b3c4977fea2a4d96889f33dc8fd1e84f2d9a3bc1ae518e329923c",
+      "prev": "31742f3fd1f4fb9e68b50d8b61de9556a6a23a2816c53f6f4415b4ae0f78e18f",
+      "prev_wave": null,
+      "frame_hash": "3040819fec55589e516c1835675703e0f68a42d7f34a3e20aa0423cc87b6661a",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 18,
+      "utc": "2026-08-29T16:10:38.525Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "a183ea6c41bc2c7c",
+        "lane": "done",
+        "titleAt": "Open the PRs against current main",
+        "who": "@scout"
+      },
+      "payload_hash": "d92c26253075e851fd03bbdb50ccabf80dd5b8436196ff1c67276aaa11632fec",
+      "prev": "6f073d70f57b3c4977fea2a4d96889f33dc8fd1e84f2d9a3bc1ae518e329923c",
+      "prev_wave": null,
+      "frame_hash": "fa5ccf6dee8c8ffa0a96f59dc9af63b6db808214cd2e2ebdce1fe63a08d37274",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 19,
+      "utc": "2026-08-29T16:10:39.079Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "1acdbe2097452022",
+        "lane": "now",
+        "titleAt": "Prove the tests are not theatre",
+        "who": "@reviewer"
+      },
+      "payload_hash": "d0f2aa1fa23ad86fdd63e59717e12b7331b4af85e526c8fb697e3a2141d5ccfa",
+      "prev": "d92c26253075e851fd03bbdb50ccabf80dd5b8436196ff1c67276aaa11632fec",
+      "prev_wave": null,
+      "frame_hash": "5ad91bc221239dd3cfb94de503fe6eec2bf80483dbdb63650a4977309193f104",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 20,
+      "utc": "2026-08-29T16:10:39.731Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "1acdbe2097452022",
+        "title": "Prove the tests are not theatre",
+        "note": "read it against the spec, not against the comments",
+        "who": "@reviewer",
+        "titleAt": "Prove the tests are not theatre"
+      },
+      "payload_hash": "134768a7cf0b18bc62747b3a59941542f424ced315baf7339a68212fa19f3365",
+      "prev": "d0f2aa1fa23ad86fdd63e59717e12b7331b4af85e526c8fb697e3a2141d5ccfa",
+      "prev_wave": null,
+      "frame_hash": "69cbc0e6d9335ae49a191bd4e2f9e35711d027e146c253671ba6e02e4cb6657c",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 21,
+      "utc": "2026-08-29T16:10:40.383Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "1acdbe2097452022",
+        "lane": "done",
+        "titleAt": "Prove the tests are not theatre",
+        "who": "@reviewer"
+      },
+      "payload_hash": "76970e0d6db49986d83ca8be66c9019df5f91b569dcbee0128eb7c11c1a78627",
+      "prev": "134768a7cf0b18bc62747b3a59941542f424ced315baf7339a68212fa19f3365",
+      "prev_wave": null,
+      "frame_hash": "c423fd34cd81219643aab315f93a6c236e91ee1ca3d87a4954f517286dd2132a",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 22,
+      "utc": "2026-08-29T16:10:40.936Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "2b4d750598bbdc3e",
+        "title": "Presence relay",
+        "note": "ruled out the two easy explanations",
+        "who": "@triage",
+        "titleAt": "Presence relay"
+      },
+      "payload_hash": "4494a6741e0d39069ddd6bdd2bd52f71d060d233d840f9e4dde35a42a13c1071",
+      "prev": "76970e0d6db49986d83ca8be66c9019df5f91b569dcbee0128eb7c11c1a78627",
+      "prev_wave": null,
+      "frame_hash": "8c85c2cc115457945936bd5f065cfb4bc5f20a859bacbc68f9c050c31afac31b",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 23,
+      "utc": "2026-08-29T16:10:41.588Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "2b4d750598bbdc3e",
+        "lane": "done",
+        "titleAt": "Presence relay",
+        "who": "@triage"
+      },
+      "payload_hash": "d2a6637d7ec7ef8d066059be0a8f58c6f07da548379f60a2705e018a192ecaf6",
+      "prev": "4494a6741e0d39069ddd6bdd2bd52f71d060d233d840f9e4dde35a42a13c1071",
+      "prev_wave": null,
+      "frame_hash": "bf28b5356b7898c7a28d7cf520a29ed984c0a5b82ac441e793d2ec5e66f19ec9",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 24,
+      "utc": "2026-08-29T16:10:42.141Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "099d488b51f1eeba",
+        "title": "Badges read 3 in every tab",
+        "note": "pulled the sources and reconciled them",
+        "who": "@scout",
+        "titleAt": "Badges read 3 in every tab"
+      },
+      "payload_hash": "673a6c026bba8ea75cc5b8a12fa465573fefac0ccd8da7c5367c9d68e2d08b0e",
+      "prev": "d2a6637d7ec7ef8d066059be0a8f58c6f07da548379f60a2705e018a192ecaf6",
+      "prev_wave": null,
+      "frame_hash": "c58c0b79ebee3cbfacd5818ad4ea9f32d3ff54c859c7262b8a9cb304bb564a13",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 25,
+      "utc": "2026-08-29T16:10:42.793Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "099d488b51f1eeba",
+        "lane": "done",
+        "titleAt": "Badges read 3 in every tab",
+        "who": "@scout"
+      },
+      "payload_hash": "2873e56c9578a1a84b2d0675086fa217e2e5e4041364375c19969b9b64b22d65",
+      "prev": "673a6c026bba8ea75cc5b8a12fa465573fefac0ccd8da7c5367c9d68e2d08b0e",
+      "prev_wave": null,
+      "frame_hash": "f3ce0aec2d8f08e4be2d0b9d18af37976cd0dee62212fe018ae021290433aa3e",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 26,
+      "utc": "2026-08-29T16:10:43.347Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "f9e62bbb3eead3c7",
+        "title": "Kill switch re-armed by its own work",
+        "note": "read it against the spec, not against the comments",
+        "who": "@reviewer",
+        "titleAt": "Kill switch re-armed by its own work"
+      },
+      "payload_hash": "2e5090f9b51788743af2faa6c53a8fbe4ad3d70f132bf8b9427a5a31bd7d741f",
+      "prev": "2873e56c9578a1a84b2d0675086fa217e2e5e4041364375c19969b9b64b22d65",
+      "prev_wave": null,
+      "frame_hash": "0a712185ee7a0c03af95e51260f8635dd0f9776c522b2771559e0595f9352b5a",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 27,
+      "utc": "2026-08-29T16:10:43.998Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "f9e62bbb3eead3c7",
+        "lane": "done",
+        "titleAt": "Kill switch re-armed by its own work",
+        "who": "@reviewer"
+      },
+      "payload_hash": "5235384e650013a313a3a620812e395e4d74eeb949d2fe758cad00b794587329",
+      "prev": "2e5090f9b51788743af2faa6c53a8fbe4ad3d70f132bf8b9427a5a31bd7d741f",
+      "prev_wave": null,
+      "frame_hash": "1455157c1a0e247a79d9c421368c1f2ca6e29b6274b0325b4ddf3e8c727197e9",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 28,
+      "utc": "2026-08-29T16:10:44.552Z",
+      "payload": {
+        "event": "card.edited",
+        "card": "7bda4c120f8ea670",
+        "title": "disposeObject releases a shared geometry",
+        "note": "tried to disprove it and could not",
+        "who": "@reviewer",
+        "titleAt": "disposeObject releases a shared geometry"
+      },
+      "payload_hash": "4aad53bff8c3a4bdecd3b820f1f9609bd9103bc267c6154b78f13834fa9a310c",
+      "prev": "5235384e650013a313a3a620812e395e4d74eeb949d2fe758cad00b794587329",
+      "prev_wave": null,
+      "frame_hash": "7c216419b21fb39b5c88ab046114cfdc7898ed7654a6da6de434df33314526be",
+      "sig": null
+    },
+    {
+      "spec": "rapp/1",
+      "kind": "memory.save",
+      "stream_id": "rappid:@kody-w/workroom-demo-tour:84e3cf5a833f023bfdef5b1c0a474ac0c84445ed5e7b75eb2220468b2f65098c:3a89754fd9c7059d",
+      "seq": 29,
+      "utc": "2026-08-29T16:10:45.204Z",
+      "payload": {
+        "event": "card.moved",
+        "card": "7bda4c120f8ea670",
+        "lane": "done",
+        "titleAt": "disposeObject releases a shared geometry",
+        "who": "@reviewer"
+      },
+      "payload_hash": "fd35769db93c80e29692e750b41e0a4de06a6aa2e7b31f3281bd7e6a2d392df1",
+      "prev": "4aad53bff8c3a4bdecd3b820f1f9609bd9103bc267c6154b78f13834fa9a310c",
+      "prev_wave": null,
+      "frame_hash": "194e2c933333846ab23617478fedbb972da036e446e89e70605168f8f299222f",
+      "sig": null
+    }
+  ]
+}

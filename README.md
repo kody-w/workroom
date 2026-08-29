@@ -142,11 +142,37 @@ node replaycheck.mjs   # the scrubber, the read-only past, return to now
 node playcheck.mjs     # the animated replay, frame by frame
 node runcheck.mjs      # the dry run — sha256s the files that reached the DISK
 node forkcheck.mjs     # a fork is a new stream that knows its parent
+node studiocheck.mjs   # the studio's wire, and a watcher rebuilding from it
+node gatecheck.mjs     # every door enforces the rule the door beside it does
 ```
+
+`gatecheck.mjs` takes the file under test as `argv[2]`, so each case can be run against
+the revision its bug lived in — which is the only thing that makes a new test worth
+having. Five of its eight assertions fail on the previous commit and all pass on this
+one.
 
 `runcheck.mjs` catches every download the page starts, hashes the bytes that
 landed, and requires them to equal what the Outbox printed. A file the app
 described but did not write, or wrote differently, fails there.
+
+## Watch it, broadcast it, record it
+
+Open `broadcast.html`. The board runs in a frame and every frame it commits lands
+on **the wire** beside it, in real time, as it is written.
+
+**Go live** hands you a link. What crosses it is not a picture of the board: it is
+the **frames**. The watcher verifies every one — hashes recomputed, links followed —
+and re-derives the board with its own projection code. So what is shared is the
+record, and a watcher's copy is as good as the original rather than a video of it.
+A frame that does not verify is refused at the watcher's door and named on screen.
+
+**Record** captures the tab to a `.webm` and writes it out when you stop, together
+with a `.frames.json` of exactly what was on the wire while it was rolling — so the
+film can be checked against something instead of believed.
+
+The studio holds its own copy of the canonicalizer, because two readers of the same
+wire must canonicalize identically. `verify_parity.mjs` fails if that copy drifts
+from the app's by a single byte.
 
 ## Import / export
 

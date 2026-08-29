@@ -61,7 +61,7 @@ for (const a of box) {
   const f = files.find(x => x.name === a.name);
   if (!f) { console.log('  MISSING ON DISK  ' + a.name); mismatched++; continue; }
   const bytes = readFileSync(f.path);
-  const sha = createHash('sha256').update(Buffer.concat([Buffer.from('rapp/1:artifact\n'), bytes])).digest('hex');
+  const sha = createHash('sha256').update(bytes).digest('hex');   // plain, like shasum -a 256
   if (sha !== a.sha) { console.log('  HASH DIFFERS     ' + a.name); mismatched++; }
   if (bytes.length !== a.bytes) { console.log('  LENGTH DIFFERS   ' + a.name); mismatched++; }
   if (!bytes.length) empty++;
