@@ -1,0 +1,143 @@
+{
+  "format": "rapp/1-reference-vectors/1",
+  "metadata": {
+    "source_repository": "https://github.com/kody-w/rapp-1",
+    "source_commit": "67dacce4f8ce5909aa1fd6dd401d0f8183d730a8",
+    "reference_implementation": "rapp.py",
+    "specification": "SPEC.md",
+    "spec_revision": "rev-6",
+    "generated_by": "python3 rapp.py canonical/H at the pinned source commit"
+  },
+  "cases": {
+    "genesis": {
+      "input": {
+        "event": "room.opened",
+        "title": "The Workroom"
+      },
+      "expected": {
+        "canonical": "{\"event\":\"room.opened\",\"title\":\"The Workroom\"}",
+        "particle": "64a9f82d54f679eb75e7ada7bbc088a3eb48200aa04c82820560e05b23af3ef6",
+        "wave": "f44c460299aee235abe6564ea2106941159b6900f72a2c18195e678c2d156eb4"
+      }
+    },
+    "card": {
+      "input": {
+        "event": "card.added",
+        "card": "a1b2c3d4e5f60718",
+        "lane": "now",
+        "title": "Ship the tour — \"final\" cut",
+        "note": "line one\nline two\ttabbed",
+        "who": "KW"
+      },
+      "expected": {
+        "canonical": "{\"card\":\"a1b2c3d4e5f60718\",\"event\":\"card.added\",\"lane\":\"now\",\"note\":\"line one\\nline two\\ttabbed\",\"title\":\"Ship the tour — \\\"final\\\" cut\",\"who\":\"KW\"}",
+        "particle": "ac54e95cc5fef51032b1b7cfbe1e0363a0062614f0db6de6d8b7034f97405388",
+        "wave": "454ff37d8479fa731701c38adf0d388269fbbf92c9d1b2b100352530ec2dd3c8"
+      }
+    },
+    "unsorted": {
+      "input": {
+        "z": 1,
+        "a": 2,
+        "m": {
+          "q": "x",
+          "b": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "expected": {
+        "canonical": "{\"a\":2,\"m\":{\"b\":[1,2,3],\"q\":\"x\"},\"z\":1}",
+        "particle": "13eb3c389c497c6e887cbee8767ae2f79cdb712ec30869c9766938fb8a0e58b4",
+        "wave": "dbcc8ddf1483055b1a6b6668b7a908e6342905c781e110dd6cb00adb5cdd4811"
+      }
+    },
+    "sorted": {
+      "input": {
+        "a": 2,
+        "m": {
+          "b": [
+            1,
+            2,
+            3
+          ],
+          "q": "x"
+        },
+        "z": 1
+      },
+      "expected": {
+        "canonical": "{\"a\":2,\"m\":{\"b\":[1,2,3],\"q\":\"x\"},\"z\":1}",
+        "particle": "13eb3c389c497c6e887cbee8767ae2f79cdb712ec30869c9766938fb8a0e58b4",
+        "wave": "dbcc8ddf1483055b1a6b6668b7a908e6342905c781e110dd6cb00adb5cdd4811"
+      }
+    },
+    "empty": {
+      "input": {},
+      "expected": {
+        "canonical": "{}",
+        "particle": "00d4ee8c3964f0e289ba07982ab8457a7b820056236640bda09572f0725a265b",
+        "wave": "ab798cfb24baa558f2d3e954a0124aed161196aaa12a848f6c80e29e227bb81a"
+      }
+    },
+    "nested": {
+      "input": {
+        "a": [
+          {
+            "b": {}
+          },
+          [],
+          [
+            0,
+            -1,
+            9007199254740991
+          ]
+        ],
+        "c": null,
+        "d": false
+      },
+      "expected": {
+        "canonical": "{\"a\":[{\"b\":{}},[],[0,-1,9007199254740991]],\"c\":null,\"d\":false}",
+        "particle": "260860a8399f17f7045f799c848e79dc8a0d477e50e29968e9c5945e753b26c2",
+        "wave": "2ce2de4a7cb6fc3649760ebc51708f76c5a43b25089019051604ee38498b38cc"
+      }
+    },
+    "unicode": {
+      "input": {
+        "é": "café",
+        "z": "naïve",
+        "a": "日本語",
+        "emoji": "a🙂b"
+      },
+      "expected": {
+        "canonical": "{\"a\":\"日本語\",\"emoji\":\"a🙂b\",\"z\":\"naïve\",\"é\":\"café\"}",
+        "particle": "061d5dd15eb39076e0cf861ed709ff95fece5306a294b03d8765a6cad225d77d",
+        "wave": "9f6789a36337f096de133d27580591384f34e949f1b1c9b75bc2ae0dc579d975"
+      }
+    },
+    "preimage": {
+      "input": {
+        "spec": "rapp/1",
+        "kind": "memory.save",
+        "stream_id": "rappid:@kody-w/workroom:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb",
+        "seq": 3,
+        "utc": "2026-08-29T04:05:06.007Z",
+        "payload": {
+          "event": "card.moved",
+          "card": "a1b2c3d4e5f60718",
+          "lane": "done",
+          "titleAt": "Ship it"
+        },
+        "payload_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "prev": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "prev_wave": null
+      },
+      "expected": {
+        "canonical": "{\"kind\":\"memory.save\",\"payload\":{\"card\":\"a1b2c3d4e5f60718\",\"event\":\"card.moved\",\"lane\":\"done\",\"titleAt\":\"Ship it\"},\"payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"prev\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"prev_wave\":null,\"seq\":3,\"spec\":\"rapp/1\",\"stream_id\":\"rappid:@kody-w/workroom:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb\",\"utc\":\"2026-08-29T04:05:06.007Z\"}",
+        "particle": "5360300a6f43f91a6749d1d63c07fc74186d8001b258dd1c7755e6bd9c345b96",
+        "wave": "6689a1e82e3d930c39cf05182cff9e0b5f826f7535e32b8bdc55643b8ff0450e"
+      }
+    }
+  }
+}

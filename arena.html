@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Frame Arena</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three-r128.min.js"></script>
 <style>
   :root{
     --bg:#05070a; --panel:#0a0e14; --line:#18202b; --ink:#eaf0f7; --dim:#6f8299;
@@ -12,7 +12,8 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden;
+       display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);
          background:var(--panel);flex-wrap:wrap}
   h1{font-size:13px;margin:0;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
@@ -21,9 +22,10 @@
   button{font:inherit;font-size:12px;padding:5px 10px;border-radius:6px;border:1px solid var(--line);
          background:#121a24;color:var(--ink);cursor:pointer}
   button:hover{border-color:#26323f}
+  button:focus-visible,#lockhint:focus-visible,input:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
   button.go{background:var(--accent);border-color:var(--accent);color:#1a0a02;font-weight:700}
   button.hot{background:var(--bad);border-color:var(--bad);color:#1a0505;font-weight:700}
-  main{display:flex;height:calc(100% - 45px)}
+  main{display:flex;flex:1;min-height:0}
   #view{flex:1;min-width:0;position:relative;cursor:crosshair}
   canvas{display:block;width:100%;height:100%}
   #cross{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;pointer-events:none}
@@ -65,6 +67,14 @@
   .stat{padding:6px 12px;border-top:1px solid var(--line);font:10.5px/1.5 var(--mono);color:var(--dim);min-height:28px}
   .stat.ok{color:var(--ok)} .stat.bad{color:var(--bad)}
   input[type=range]{width:100%}
+  @media (max-width:700px){
+    body{overflow:auto;min-height:100%}
+    header{flex:0 0 auto}
+    main{flex:0 0 auto;flex-direction:column;min-height:calc(100dvh - 132px)}
+    #view{width:100%;min-height:300px;flex:0 0 min(52vh,360px)}
+    aside{width:100%;flex:0 0 auto;min-height:420px;border-left:0;border-top:1px solid var(--line)}
+    .wire{min-height:180px}
+  }
 </style>
 
 <header>
@@ -86,7 +96,7 @@
     <div id="feed"></div>
     <div id="hud"></div>
     <div id="dead"></div>
-    <div id="lockhint"><div>Click to take the controls</div><small>W A S D move · mouse aim · click fire · R reload · Esc release</small></div>
+    <div id="lockhint" role="button" tabindex="0" aria-label="Take arena controls"><div>Click or press Enter to take the controls</div><small>W A S D move · mouse aim · click fire · R reload · Esc release</small></div>
   </div>
   <aside>
     <div class="band"><h2>The match</h2><div class="kv" id="meta"></div></div>
@@ -209,11 +219,23 @@ async function buildFrame(streamId, seq, payload, prev, floorUtc) {
    of the chain. */
 const $ = (id) => document.getElementById(id);
 const SPEC = 'rapp/1', KIND = 'memory.save';
-const LS = { frames: 'arena.frames', stream: 'arena.stream' };
+const STORAGE_VERSION = 1;
+const QUARANTINE_VERSION = 2;
+const LS = { record: 'arena.record.v1', quarantine: 'arena.quarantine.v2',
+             frames: 'arena.frames', stream: 'arena.stream' };
 const ARENA = 30;                  // metres across
 const LIM = ARENA * 5 - 8;         // tenths, minus a body's width
 const EVENTS = ['match.opened', 'player.spawned', 'player.moved', 'player.fired', 'player.hit', 'player.died'];
 const MAXHP = 100, DAMAGE = 34, MAG = 12;
+const MOVE_SPEED = 70;              // tenths of a metre per second
+const MAX_MOTION_SAMPLE_MS = 500;   // background tabs never cash in an unbounded pause
+const FIRE_COOLDOWN_MS = 120;
+const RESPAWN_MS = 2600;
+const BODY_RADIUS = 0.36;
+const STREAM_RE = /^rappid:@[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+:[0-9a-f]{64}:[0-9a-f]{16}$/;
+const HASH_RE = /^[0-9a-f]{64}$/;
+const UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const WRITE_LOCK = 'arena.record.v1:write';
 
 const BOTS = [
   { id: 'atlas',  color: 0xfbbf24 },
@@ -224,13 +246,136 @@ const BOTS = [
 const TINT = { you: 0xe2e8f0 };
 for (const b of BOTS) TINT[b.id] = b.color;
 
-let frames = [], streamId = null, W = null, viewAt = null, refused = null;
+let frames = [], streamId = null, W = null, viewAt = null, refused = null, activeRecovery = null;
+let storageBaseline = null, stale = false;
 let botTimer = null, playing = null;
 const stat = (m, c) => { const e = $('stat'); e.textContent = m; e.className = 'stat ' + (c || ''); };
-const load = (k) => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
-const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+function readJson(k) {
+  let raw;
+  try { raw = localStorage.getItem(k); } catch (e) { return { state: 'unreadable', error: e.message }; }
+  if (raw === null) return { state: 'missing' };
+  try { return { state: 'ok', value: JSON.parse(raw), raw }; }
+  catch (e) { return { state: 'unreadable', error: e.message, raw }; }
+}
+function envelopeObjection(v) {
+  if (!isObj(v)) return 'the stored record is not an object';
+  if (v.version !== STORAGE_VERSION) return 'unsupported stored record version';
+  if (typeof v.stream_id !== 'string' || !STREAM_RE.test(v.stream_id)) return 'the stored stream id is malformed';
+  if (!Array.isArray(v.frames)) return 'the stored frames are not an array';
+  return null;
+}
+const envelopeText = (stream, list) => JSON.stringify({ version: STORAGE_VERSION, stream_id: stream, frames: list });
+function persistEnvelope(stream, list) {
+  let text;
+  try { text = envelopeText(stream, list); } catch (e) { return 'the record could not be encoded — ' + e.message; }
+  try {
+    localStorage.setItem(LS.record, text);
+    if (localStorage.getItem(LS.record) !== text) return 'the browser did not retain the record';
+    return null;
+  } catch (e) {
+    return 'the record could not be written — ' + e.message;
+  }
+}
+function forgetLegacy() {
+  try { localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream); } catch (e) {}
+}
+function storageSnapshot() {
+  try {
+    return { ok: true, record: localStorage.getItem(LS.record),
+             frames: localStorage.getItem(LS.frames), stream: localStorage.getItem(LS.stream) };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+const sameStorageSnapshot = (a, b) => a.ok && b.ok &&
+  a.record === b.record && a.frames === b.frames && a.stream === b.stream;
+function adoptStorageBaseline() {
+  const snapshot = storageSnapshot();
+  if (snapshot.ok) { storageBaseline = snapshot; stale = false; }
+  return snapshot;
+}
+function latchStale(message) {
+  stale = true;
+  refused = message || 'another tab changed this match — reload before acting here';
+  setBots(false); stopPlay(); held.clear();
+  stat(refused, 'bad');
+}
+async function withRecordLock(work) {
+  if (!navigator.locks?.request) return { error: 'Web Locks are unavailable — Arena is read-only' };
+  let entered = false;
+  try {
+    return await navigator.locks.request(WRITE_LOCK, { mode: 'exclusive' }, async () => {
+      entered = true;
+      return work();
+    });
+  } catch (e) {
+    if (entered) throw e;
+    return { error: 'Web Locks are unavailable — Arena is read-only' };
+  }
+}
+async function quarantineObjection(value) {
+  if (!isObj(value) || value.version !== QUARANTINE_VERSION || !Array.isArray(value.entries))
+    return 'the recovery quarantine has the wrong shape';
+  for (const entry of value.entries) {
+    if (!isObj(entry) || typeof entry.reason !== 'string' || !Array.isArray(entry.items) || !entry.items.length ||
+        utcObjection(entry.captured_utc)) return 'the recovery quarantine contains a malformed entry';
+    for (const item of entry.items) {
+      if (!isObj(item) || typeof item.key !== 'string' || typeof item.raw !== 'string' ||
+          !Number.isSafeInteger(item.byte_length) || typeof item.raw_sha256 !== 'string' ||
+          !HASH_RE.test(item.raw_sha256)) return 'the recovery quarantine contains malformed bytes';
+      const bytes = enc.encode(item.raw);
+      if (bytes.length !== item.byte_length || await sha256Plain(bytes) !== item.raw_sha256)
+        return 'the recovery quarantine entry does not match its bytes';
+    }
+  }
+  return null;
+}
+async function persistQuarantine(recovery) {
+  if (!recovery || !Array.isArray(recovery.items) || !recovery.items.length ||
+      recovery.items.some(item => typeof item.key !== 'string' || typeof item.raw !== 'string'))
+    return 'the corrupt record bytes are unavailable for recovery';
+  const stored = readJson(LS.quarantine);
+  if (stored.state === 'unreadable') return 'the recovery quarantine is unreadable and was not overwritten';
+  const value = stored.state === 'missing' ? { version: QUARANTINE_VERSION, entries: [] } : stored.value;
+  const existingProblem = await quarantineObjection(value);
+  if (existingProblem) return existingProblem + ' and was not overwritten';
+  const items = [];
+  for (const item of recovery.items) {
+    const bytes = enc.encode(item.raw);
+    items.push({ key: item.key, byte_length: bytes.length,
+                 raw_sha256: await sha256Plain(bytes), raw: item.raw });
+  }
+  const duplicate = value.entries.some(entry => JSON.stringify(entry.items) === JSON.stringify(items));
+  if (!duplicate) {
+    value.entries.push({ captured_utc: utcNow(), reason: recovery.reason, items });
+  }
+  const text = JSON.stringify(value);
+  try {
+    localStorage.setItem(LS.quarantine, text);
+    if (localStorage.getItem(LS.quarantine) !== text) return 'the browser did not retain the recovery quarantine';
+  } catch (e) { return 'the recovery quarantine could not be written — ' + e.message; }
+  const readback = readJson(LS.quarantine);
+  if (readback.state !== 'ok' || await quarantineObjection(readback.value))
+    return 'the recovery quarantine did not validate after writing';
+  return null;
+}
+async function latestQuarantineEntry() {
+  const stored = readJson(LS.quarantine);
+  if (stored.state !== 'ok' || await quarantineObjection(stored.value)) return null;
+  return stored.value.entries[stored.value.entries.length - 1] || null;
+}
+async function replaceEnvelope(expected, stream, list, recovery) {
+  return withRecordLock(async () => {
+    const current = storageSnapshot();
+    if (!sameStorageSnapshot(expected, current)) return { error: 'the stored match changed — reload before replacing it', stale: true };
+    if (recovery) {
+      const quarantineProblem = await persistQuarantine(recovery);
+      if (quarantineProblem) return { error: quarantineProblem };
+    }
+    const writeProblem = persistEnvelope(stream, list);
+    return writeProblem ? { error: writeProblem } : { ok: true };
+  });
+}
 
 function utcNow(floor) {
   let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
@@ -238,15 +383,21 @@ function utcNow(floor) {
   return u;
 }
 const FUTURE_LIMIT = () => new Date(Date.now() + 864e5).toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+function utcObjection(u) {
+  if (typeof u !== 'string' || !UTC_RE.test(u)) return 'utc is not the canonical millisecond form';
+  const ms = Date.parse(u);
+  if (!Number.isFinite(ms) || new Date(ms).toISOString() !== u) return 'utc is not a real instant';
+  return null;
+}
 
 async function mintStream() {
   const tail = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
   const inst = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
   return 'rappid:@kody-w/arena:' + tail + ':' + inst.slice(0, 16);
 }
-async function buildFrame(stream, seq, payload, prev, floorUtc) {
+async function buildFrame(stream, seq, payload, prev, floorUtc, exactUtc) {
   const payload_hash = await H('rapp/1:particle', payload);
-  const pre = { spec: SPEC, kind: KIND, stream_id: stream, seq, utc: utcNow(floorUtc),
+  const pre = { spec: SPEC, kind: KIND, stream_id: stream, seq, utc: exactUtc || utcNow(floorUtc),
                 payload, payload_hash, prev, prev_wave: null };
   return { ...pre, frame_hash: await H('rapp/1:wave', pre), sig: null };
 }
@@ -283,12 +434,60 @@ function project(list) {
   return w;
 }
 
+function lastFrame(list, test) {
+  for (let i = list.length - 1; i >= 0; i--) if (test(list[i])) return list[i];
+  return null;
+}
+function segmentHitsBox(ax, az, bx, bz, minX, maxX, minZ, maxZ) {
+  const dx = bx - ax, dz = bz - az;
+  let lo = 0, hi = 1;
+  for (const [p, d, min, max] of [[ax, dx, minX, maxX], [az, dz, minZ, maxZ]]) {
+    if (Math.abs(d) < 1e-9) {
+      if (p < min || p > max) return false;
+      continue;
+    }
+    const a = (min - p) / d, b = (max - p) / d;
+    lo = Math.max(lo, Math.min(a, b)); hi = Math.min(hi, Math.max(a, b));
+    if (lo > hi) return false;
+  }
+  return hi >= 0 && lo <= 1;
+}
+function positionBlocked(x, z) {
+  const px = x / 10, pz = z / 10;
+  return COVER.some(([cx, cz, width]) =>
+    px >= cx - width / 2 - BODY_RADIUS && px <= cx + width / 2 + BODY_RADIUS &&
+    pz >= cz - 0.6 - BODY_RADIUS && pz <= cz + 0.6 + BODY_RADIUS);
+}
+function movementBlocked(ax, az, bx, bz) {
+  return COVER.some(([cx, cz, width]) => segmentHitsBox(
+    ax / 10, az / 10, bx / 10, bz / 10,
+    cx - width / 2 - BODY_RADIUS, cx + width / 2 + BODY_RADIUS,
+    cz - 0.6 - BODY_RADIUS, cz + 0.6 + BODY_RADIUS));
+}
+function shotBlocked(ax, az, bx, bz) {
+  return COVER.some(([cx, cz, width]) => segmentHitsBox(
+    ax / 10, az / 10, bx / 10, bz / 10,
+    cx - width / 2, cx + width / 2, cz - 0.6, cz + 0.6));
+}
+function provenanceObjection(from) {
+  if (from == null) return null;
+  if (!isObj(from) || Object.keys(from).sort().join(',') !== 'frame_hash,seq,stream_id') return 'fork provenance is malformed';
+  if (typeof from.stream_id !== 'string' || !STREAM_RE.test(from.stream_id)) return 'fork parent stream is malformed';
+  if (!Number.isSafeInteger(from.seq) || from.seq < 0) return 'fork parent seq is malformed';
+  if (typeof from.frame_hash !== 'string' || !HASH_RE.test(from.frame_hash)) return 'fork parent hash is malformed';
+  return null;
+}
+
 // The append door enforces exactly what the verify door enforces. Anything less and
 // the app can write a frame it will refuse to load — a record that bricks itself.
-function payloadObjection(q, list) {
+function payloadObjection(q, list, frameUtc) {
   if (!isObj(q)) return 'not a payload';
   if (!EVENTS.includes(q.event)) return 'not an event this arena knows';
-  if (!list.length) return q.event === 'match.opened' ? null : 'a match begins at its genesis';
+  if (!list.length) {
+    if (q.event !== 'match.opened') return 'a match begins at its genesis';
+    if (typeof q.title !== 'string' || !q.title) return 'a match needs a title';
+    return provenanceObjection(q.from);
+  }
   if (q.event === 'match.opened') return 'a genesis can only be the first frame';
   if (typeof q.who !== 'string' || !q.who) return 'that names nobody';
   const w = project(list);
@@ -296,31 +495,71 @@ function payloadObjection(q, list) {
   if (q.event === 'player.spawned') {
     if (c && c.alive) return 'already alive in this match';
     if (!Number.isSafeInteger(q.x) || !Number.isSafeInteger(q.z)) return 'a position must be whole tenths';
+    if (!Number.isSafeInteger(q.ry)) return 'an angle must be a whole hundredth-radian';
     if (Math.abs(q.x) > LIM || Math.abs(q.z) > LIM) return 'outside the arena';
+    if (positionBlocked(q.x, q.z)) return 'inside cover';
+    if (c) {
+      const died = lastFrame(list, f => f.payload.event === 'player.died' && f.payload.who === q.who);
+      if (!died || Date.parse(frameUtc) - Date.parse(died.utc) < RESPAWN_MS) return 'respawned before the recovery interval';
+    }
     return null;
   }
   if (!c) return 'never spawned';
   if (!c.alive) return 'is down — a dead player does nothing until it spawns again';
+  if (c.hp <= 0 && q.event !== 'player.died') return 'has zero health and cannot act';
   if (q.event === 'player.moved') {
     if (!Number.isSafeInteger(q.x) || !Number.isSafeInteger(q.z)) return 'a position must be whole tenths';
+    if (!Number.isSafeInteger(q.ry)) return 'an angle must be a whole hundredth-radian';
     if (Math.abs(q.x) > LIM || Math.abs(q.z) > LIM) return 'outside the arena';
-    // no teleporting: a step is bounded, and the bound is in the RECORD, not the renderer
     if (Math.hypot(q.x - c.x, q.z - c.z) > 26) return 'that is further than a step';
+    if (movementBlocked(c.x, c.z, q.x, q.z)) return 'that step crosses cover';
+    const prior = lastFrame(list, f => (f.payload.event === 'player.spawned' || f.payload.event === 'player.moved') && f.payload.who === q.who);
+    const elapsed = prior ? Date.parse(frameUtc) - Date.parse(prior.utc) : 0;
+    const allowed = MOVE_SPEED * Math.max(0, elapsed) / 1000 + 2;
+    if (Math.hypot(q.x - c.x, q.z - c.z) > allowed) return 'that step is faster than wall time allows';
     return null;
   }
   if (q.event === 'player.fired') {
-    if (!q.reload && c.ammo <= 0) return 'the magazine is empty';
-    if (q.hit != null && !w.p[q.hit]) return 'shot somebody who is not here';
+    if (q.reload === true) {
+      if (q.hit != null) return 'a reload cannot claim a hit';
+      if (c.ammo === MAG) return 'the magazine is already full';
+      return null;
+    }
+    if (q.reload != null && q.reload !== false) return 'reload must be boolean';
+    if (c.ammo <= 0) return 'the magazine is empty';
+    if (!Object.prototype.hasOwnProperty.call(q, 'hit') ||
+        (q.hit !== null && (typeof q.hit !== 'string' || !w.p[q.hit]?.alive))) return 'the shot does not name its derived target';
+    const prior = lastFrame(list, f => f.payload.event === 'player.fired' && !f.payload.reload && f.payload.who === q.who);
+    if (prior && Date.parse(frameUtc) - Date.parse(prior.utc) < FIRE_COOLDOWN_MS) return 'fired faster than wall time allows';
+    const derived = traceFrom(q.who, c.x, c.z, c.ry, w);
+    if ((q.hit || null) !== derived) return 'the claimed target is not the independently derived target';
     return null;
   }
   if (q.event === 'player.hit') {
-    if (typeof q.by !== 'string' || !w.p[q.by]) return 'hit by nobody';
-    if (!Number.isSafeInteger(q.damage) || q.damage <= 0 || q.damage > 100) return 'that is not a damage';
+    const attacker = typeof q.by === 'string' ? w.p[q.by] : null;
+    if (!attacker || !attacker.alive || attacker.hp <= 0) return 'hit by somebody who cannot act';
+    if (q.damage !== DAMAGE) return 'damage is not the arena damage';
+    if (!Number.isSafeInteger(q.shot_seq) || typeof q.shot_hash !== 'string' || !HASH_RE.test(q.shot_hash)) return 'the hit does not name its shot';
+    const shot = list[q.shot_seq];
+    if (!shot || shot.frame_hash !== q.shot_hash || shot.payload.event !== 'player.fired' ||
+        shot.payload.reload || shot.payload.who !== q.by || shot.payload.hit !== q.who) return 'the hit does not follow that exact shot';
+    if (list.some(f => f.payload.event === 'player.hit' &&
+        f.payload.shot_seq === q.shot_seq && f.payload.shot_hash === q.shot_hash)) return 'that shot was already consumed';
     return null;
   }
   if (q.event === 'player.died') {
-    if (typeof q.by !== 'string' || !w.p[q.by]) return 'killed by nobody';
+    const attacker = typeof q.by === 'string' ? w.p[q.by] : null;
+    if (!attacker || !attacker.alive || attacker.hp <= 0) return 'killed by somebody who cannot act';
     if (c.hp > 0) return 'is not down';
+    if (!Number.isSafeInteger(q.hit_seq) || typeof q.hit_hash !== 'string' || !HASH_RE.test(q.hit_hash)) return 'the death does not name its lethal hit';
+    const hit = list[q.hit_seq];
+    if (!hit || hit.frame_hash !== q.hit_hash || hit.payload.event !== 'player.hit' ||
+        hit.payload.who !== q.who || hit.payload.by !== q.by) return 'the death does not follow that exact hit';
+    const beforeHit = project(list.slice(0, q.hit_seq));
+    const afterHit = project(list.slice(0, q.hit_seq + 1));
+    if (!beforeHit.p[q.who] || beforeHit.p[q.who].hp <= 0 || !afterHit.p[q.who] || afterHit.p[q.who].hp !== 0)
+      return 'the named hit was not lethal';
+    if (q.hit_seq !== list.length - 1) return 'death must immediately follow its lethal hit';
     return null;
   }
   return null;
@@ -338,15 +577,20 @@ async function verifyChain(list, expectStream) {
       if (Object.keys(f).sort().join(',') !== KEYS) { problems.push('frame ' + i + ': key set is not the eleven'); continue; }
       if (f.spec !== SPEC) problems.push('frame ' + i + ': not ' + SPEC);
       if (f.kind !== KIND) problems.push('frame ' + i + ': kind is not ' + KIND);
+      if (typeof f.stream_id !== 'string' || !STREAM_RE.test(f.stream_id)) problems.push('frame ' + i + ': malformed stream id');
       if (expectStream && f.stream_id !== expectStream) problems.push('frame ' + i + ': a different stream');
       if (f.seq !== i) problems.push('frame ' + i + ': seq is ' + f.seq);
       if (f.sig !== null) problems.push('frame ' + i + ': sig must be null');
       if (f.prev_wave !== null) problems.push('frame ' + i + ': prev_wave must be null');
       if (f.prev !== (prev ? prev.payload_hash : null)) problems.push('frame ' + i + ': prev does not link');
+      const timeProblem = utcObjection(f.utc);
+      if (timeProblem) problems.push('frame ' + i + ': ' + timeProblem);
       if (prev && f.utc < prev.utc) problems.push('frame ' + i + ': time runs backwards');
-      if (f.utc > FUTURE_LIMIT()) problems.push('frame ' + i + ': far in the future');
-      const o = payloadObjection(f.payload, list.slice(0, i));
+      if (!timeProblem && f.utc > FUTURE_LIMIT()) problems.push('frame ' + i + ': far in the future');
+      const o = payloadObjection(f.payload, list.slice(0, i), f.utc);
       if (o) problems.push('frame ' + i + ': ' + o);
+      if (typeof f.payload_hash !== 'string' || !HASH_RE.test(f.payload_hash)) problems.push('frame ' + i + ': malformed payload hash');
+      if (typeof f.frame_hash !== 'string' || !HASH_RE.test(f.frame_hash)) problems.push('frame ' + i + ': malformed frame hash');
       if (await H('rapp/1:particle', f.payload) !== f.payload_hash) problems.push('frame ' + i + ': payload_hash does not match');
       const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
       if (await H('rapp/1:wave', pre) !== f.frame_hash) problems.push('frame ' + i + ': frame_hash does not match');
@@ -360,87 +604,106 @@ async function verifyChain(list, expectStream) {
 
 let q = Promise.resolve();
 function append(payload) { const r = q.then(() => appendOne(payload)); q = r.then(() => {}, () => {}); return r; }
+async function storageHeadObjection(expectedStream, expectedFrames) {
+  const stored = readJson(LS.record);
+  if (stored.state === 'unreadable') return 'the stored record is unreadable — reload or explicitly start a new match';
+  if (stored.state === 'missing') {
+    const legacyFrames = readJson(LS.frames), legacyStream = readJson(LS.stream);
+    if (legacyFrames.state !== 'missing' || legacyStream.state !== 'missing')
+      return 'a legacy record appeared — reload before acting here';
+    return expectedFrames.length ? 'the stored record disappeared — reload before acting here' : null;
+  }
+  const shape = envelopeObjection(stored.value);
+  if (shape) return shape;
+  let expected;
+  try { expected = envelopeText(expectedStream, expectedFrames); }
+  catch (e) { return 'the in-memory record cannot be compared — ' + e.message; }
+  if (stored.raw !== expected) return 'another tab is playing this match — reload before acting here';
+  return null;
+}
 async function appendOne(payload) {
   if (refused) return null;
   if (viewAt !== null) return null;
-  const o = payloadObjection(payload, frames);
-  if (o) { stat('refused — ' + payload.event + ': ' + o, 'bad'); return null; }
   const prev = frames[frames.length - 1] || null;
-  const f = await buildFrame(streamId, frames.length, payload, prev ? prev.payload_hash : null, prev ? prev.utc : null);
-  const disk = load(LS.frames), ds = load(LS.stream);
-  const dh = Array.isArray(disk) && disk.length && isObj(disk[disk.length - 1]) ? disk[disk.length - 1].frame_hash : null;
-  const mine = frames.length ? frames[frames.length - 1].frame_hash : null;
-  const bothEmpty = (!Array.isArray(disk) || !disk.length) && !frames.length;
-  if (!bothEmpty && (ds !== streamId || dh !== mine)) {
-    refused = 'another tab is playing this match — reload before acting here';
-    stat(refused, 'bad'); return null;
+  const frameUtc = utcNow(prev ? prev.utc : null);
+  const o = payloadObjection(payload, frames, frameUtc);
+  if (o) { stat('refused — ' + payload.event + ': ' + o, 'bad'); return null; }
+  const f = await buildFrame(streamId, frames.length, payload, prev ? prev.payload_hash : null, prev ? prev.utc : null, frameUtc);
+  const next = [...frames, f];
+  const committed = await withRecordLock(async () => {
+    if (refused) return { error: refused, stale: true };
+    const storageProblem = await storageHeadObjection(streamId, frames);
+    if (storageProblem) return { error: storageProblem, stale: true };
+    const writeProblem = persistEnvelope(streamId, next);
+    return writeProblem ? { error: writeProblem } : { ok: true };
+  });
+  if (!committed?.ok) {
+    if (committed?.stale) { stale = true; refused = committed.error; }
+    stat((committed?.error || 'the record write failed') + ' — the action was not published', 'bad');
+    return null;
   }
-  frames.push(f);
-  if (!save(LS.frames, frames) || !save(LS.stream, streamId)) {
-    frames.pop(); stat('the chain could not be written — that action was refused, not saved', 'bad'); return null;
-  }
+  frames = next;
+  adoptStorageBaseline();
   W = project(frames);
   paintWire(f); paintMeta(); paintScore();
   return f;
 }
 
 /* ── the arena ────────────────────────────────────────────────────────────── */
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070a);
-scene.fog = new THREE.FogExp2(0x05070a, 0.013);
-const camera = new THREE.PerspectiveCamera(75, 1, 0.06, 260);
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-$('view').append(renderer.domElement);
-
-scene.add(new THREE.AmbientLight(0x93a9c4, 0.78));
-const sun = new THREE.DirectionalLight(0xffd9b0, 0.95); sun.position.set(10, 20, 6); scene.add(sun);
-for (const [x, z, c] of [[-9, -9, 0xf97316], [9, -9, 0x38bdf8], [-9, 9, 0xa78bfa], [9, 9, 0x4ade80]]) {
-  const l = new THREE.PointLight(c, 2.4, 34); l.position.set(x, 4, z); scene.add(l);
-  const b = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), new THREE.MeshBasicMaterial({ color: c }));
-  b.position.set(x, 4, z); scene.add(b);
-}
-
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, ARENA),
-  new THREE.MeshStandardMaterial({ color: 0x1b2735, roughness: 0.86, metalness: 0.1 }));
-floor.rotation.x = -Math.PI / 2; scene.add(floor);
-const grid = new THREE.GridHelper(ARENA, ARENA, 0x3d5c7a, 0x24384c);
-grid.position.y = 0.01; scene.add(grid);      // Object3D.position is read-only; set through it
-
 // cover, laid out deterministically so every replay and every fork sees the same arena
 const COVER = [[-6,-3,3,2.4],[6,3,3,2.4],[0,-8,5,1.6],[0,8,5,1.6],[-9,4,1.6,3.2],[9,-4,1.6,3.2],[3,-2,1.4,1.4],[-3,2,1.4,1.4]];
-for (const [x, z, w, h] of COVER) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 1.2),
-    new THREE.MeshStandardMaterial({ color: 0x33465c, roughness: 0.72 }));
-  m.position.set(x, h / 2, z); scene.add(m);
-}
-// Four panels, not a closed box. A BackSide box has a lid, and the spectator camera
-// sits above the arena — it was looking through the underside of the roof at a dark
-// cone, which reads as a broken renderer rather than a room.
-const wallMat = new THREE.MeshStandardMaterial({ color: 0x223244, roughness: 0.95 });
-for (const [x, z, ry] of [[0, -ARENA / 2, 0], [0, ARENA / 2, Math.PI], [-ARENA / 2, 0, Math.PI / 2], [ARENA / 2, 0, -Math.PI / 2]]) {
-  const w = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, 5), wallMat);
-  w.position.set(x, 2.5, z); w.rotation.y = ry; scene.add(w);
-}
+const THREE_READY = typeof THREE !== 'undefined';
+let scene, camera, renderer, actors, fx, GEO, view;
+if (THREE_READY) {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05070a);
+  scene.fog = new THREE.FogExp2(0x05070a, 0.013);
+  camera = new THREE.PerspectiveCamera(75, 1, 0.06, 260);
+  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  $('view').append(renderer.domElement);
 
-const actors = new THREE.Group(); scene.add(actors);
-const fx = new THREE.Group(); scene.add(fx);
-const GEO = {
-  body: new THREE.CylinderGeometry(0.3, 0.36, 1.2, 14),
-  head: new THREE.SphereGeometry(0.24, 14, 12),
-  gun:  new THREE.BoxGeometry(0.12, 0.12, 0.6),
-  ring: new THREE.RingGeometry(0.44, 0.56, 24),
-};
+  scene.add(new THREE.AmbientLight(0x93a9c4, 0.78));
+  const sun = new THREE.DirectionalLight(0xffd9b0, 0.95); sun.position.set(10, 20, 6); scene.add(sun);
+  for (const [x, z, c] of [[-9, -9, 0xf97316], [9, -9, 0x38bdf8], [-9, 9, 0xa78bfa], [9, 9, 0x4ade80]]) {
+    const l = new THREE.PointLight(c, 2.4, 34); l.position.set(x, 4, z); scene.add(l);
+    const b = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), new THREE.MeshBasicMaterial({ color: c }));
+    b.position.set(x, 4, z); scene.add(b);
+  }
 
-// the weapon you are holding, parented to the camera
-const view = new THREE.Group(); camera.add(view); scene.add(camera);
-{
-  const g = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.62),
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, ARENA),
+    new THREE.MeshStandardMaterial({ color: 0x1b2735, roughness: 0.86, metalness: 0.1 }));
+  floor.rotation.x = -Math.PI / 2; scene.add(floor);
+  const grid = new THREE.GridHelper(ARENA, ARENA, 0x3d5c7a, 0x24384c);
+  grid.position.y = 0.01; scene.add(grid);
+
+  for (const [x, z, w, h] of COVER) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 1.2),
+      new THREE.MeshStandardMaterial({ color: 0x33465c, roughness: 0.72 }));
+    m.position.set(x, h / 2, z); scene.add(m);
+  }
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x223244, roughness: 0.95 });
+  for (const [x, z, ry] of [[0, -ARENA / 2, 0], [0, ARENA / 2, Math.PI], [-ARENA / 2, 0, Math.PI / 2], [ARENA / 2, 0, -Math.PI / 2]]) {
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, 5), wallMat);
+    wall.position.set(x, 2.5, z); wall.rotation.y = ry; scene.add(wall);
+  }
+
+  actors = new THREE.Group(); scene.add(actors);
+  fx = new THREE.Group(); scene.add(fx);
+  GEO = {
+    body: new THREE.CylinderGeometry(0.3, 0.36, 1.2, 14),
+    head: new THREE.SphereGeometry(0.24, 14, 12),
+    gun:  new THREE.BoxGeometry(0.12, 0.12, 0.6),
+    ring: new THREE.RingGeometry(0.44, 0.56, 24),
+  };
+
+  view = new THREE.Group(); camera.add(view); scene.add(camera);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.62),
     new THREE.MeshStandardMaterial({ color: 0x232f3d, roughness: 0.5, metalness: 0.5 }));
-  g.position.set(0.19, -0.18, -0.46); view.add(g);
-  const b = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 10),
+  gun.position.set(0.19, -0.18, -0.46); view.add(gun);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 10),
     new THREE.MeshStandardMaterial({ color: 0x39485a, metalness: 0.7, roughness: 0.35 }));
-  b.rotation.x = Math.PI / 2; b.position.set(0.19, -0.15, -0.82); view.add(b);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0.19, -0.15, -0.82); view.add(barrel);
   const muzzle = new THREE.PointLight(0xffb457, 0, 7); muzzle.position.set(0.19, -0.15, -1.0); view.add(muzzle);
   view.userData.muzzle = muzzle;
 }
@@ -515,9 +778,17 @@ function planLerp(before, after) {
 /* ── you ──────────────────────────────────────────────────────────────────── */
 let lockedIn = false, yaw = 0, pitch = 0;
 const held = new Set();
-$('view').addEventListener('click', () => { if (!lockedIn) renderer.domElement.requestPointerLock(); else fire(); });
+const takeControls = () => {
+  if (!renderer) { stat('the 3D runtime is unavailable — controls cannot start', 'bad'); return; }
+  return renderer.domElement.requestPointerLock();
+};
+$('view').addEventListener('click', () => { if (!lockedIn) takeControls(); else fire(); });
+$('lockhint').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); takeControls(); }
+});
 document.addEventListener('pointerlockchange', () => {
   lockedIn = document.pointerLockElement === renderer.domElement;
+  held.clear(); moveCarry = 0; pendingRelease = null; motionClock = performance.now();
   $('lockhint').style.display = lockedIn ? 'none' : 'flex';
 });
 document.addEventListener('mousemove', (e) => {
@@ -525,31 +796,71 @@ document.addEventListener('mousemove', (e) => {
   yaw -= e.movementX * 0.0022;
   pitch = clamp(pitch - e.movementY * 0.0022, -1.2, 1.2);
 });
-addEventListener('keydown', e => { held.add(e.key.toLowerCase()); if (e.key.toLowerCase() === 'r') reload(); });
-addEventListener('keyup', e => held.delete(e.key.toLowerCase()));
+addEventListener('keydown', e => {
+  if (!lockedIn) return;
+  const key = e.key.toLowerCase();
+  if ('wasd'.includes(key) && ![...held].some(k => 'wasd'.includes(k))) {
+    motionClock = performance.now(); moveCarry = 0;
+  }
+  held.add(key);
+  if (key === 'r') reload();
+});
+addEventListener('keyup', e => {
+  const key = e.key.toLowerCase();
+  if (lockedIn && 'wasd'.includes(key) && held.has(key)) {
+    pendingRelease = { at: performance.now(), keys: new Set(held) };
+    held.delete(key);
+    flushPendingRelease();
+  } else held.delete(key);
+});
 
-let lastStep = 0;
-async function stepYou() {
-  if (!W || viewAt !== null || refused) return;
+let lastStep = 0, motionClock = performance.now(), moveCarry = 0, stepping = false, pendingRelease = null;
+function flushPendingRelease() {
+  if (!pendingRelease || stepping) return;
+  const pending = pendingRelease; pendingRelease = null;
+  stepYou(true, pending.keys, pending.at);
+}
+async function stepYou(force, keySource, sampleTime) {
+  const now = sampleTime ?? performance.now();
+  if (stepping) return;
+  const elapsed = Math.min(MAX_MOTION_SAMPLE_MS, Math.max(0, now - motionClock));
+  motionClock = now;
+  if (!lockedIn || !W || viewAt !== null || refused) { moveCarry = 0; return; }
   const me = W.p['you']; if (!me || !me.alive) return;
-  const now = performance.now();
-  if (now - lastStep < 130) return;
+  const keys = keySource || held;
   let dx = 0, dz = 0;
-  if (held.has('w')) dz += 1; if (held.has('s')) dz -= 1;
-  if (held.has('a')) dx -= 1; if (held.has('d')) dx += 1;
+  if (keys.has('w')) dz += 1; if (keys.has('s')) dz -= 1;
+  if (keys.has('a')) dx -= 1; if (keys.has('d')) dx += 1;
   const ry = Math.round(yaw * 100);
   if (!dx && !dz) {
-    if (Math.abs(ry - me.ry) > 12) { lastStep = now; const b = W; await append({ event: 'player.moved', who: 'you', x: me.x, z: me.z, ry }); planLerp(b, W); }
+    moveCarry = 0;
+    if (now - lastStep >= 100 && Math.abs(ry - me.ry) > 12) {
+      stepping = true; lastStep = now; const before = W;
+      try {
+        await append({ event: 'player.moved', who: 'you', x: me.x, z: me.z, ry });
+        planLerp(before, W);
+      } finally { stepping = false; flushPendingRelease(); }
+    }
     return;
   }
+  moveCarry += MOVE_SPEED * elapsed / 1000;
+  if ((!force && now - lastStep < 100) || moveCarry < 1) return;
+  const distance = Math.min(26, Math.floor(moveCarry));
+  moveCarry -= distance;
   lastStep = now;
+  const len = Math.hypot(dx, dz); dx /= len; dz /= len;
   const s = Math.sin(yaw), c = Math.cos(yaw);
-  const nx = clamp(Math.round(me.x + (dx * c + dz * s) * 9), -LIM, LIM);
-  const nz = clamp(Math.round(me.z + (dz * c - dx * s) * 9), -LIM, LIM);
+  const nx = clamp(Math.round(me.x + (dx * c + dz * s) * distance), -LIM, LIM);
+  const nz = clamp(Math.round(me.z + (dz * c - dx * s) * distance), -LIM, LIM);
+  if (movementBlocked(me.x, me.z, nx, nz)) { moveCarry = 0; return; }
   const before = W;
-  await append({ event: 'player.moved', who: 'you', x: nx, z: nz, ry });
-  planLerp(before, W);
+  stepping = true;
+  try {
+    await append({ event: 'player.moved', who: 'you', x: nx, z: nz, ry });
+    planLerp(before, W);
+  } finally { stepping = false; flushPendingRelease(); }
 }
+setInterval(stepYou, 50);
 
 // A shot resolves against the PROJECTION — the same world everybody else is in —
 // and the hit it claims is written into the frame, so a replay lands the same shot.
@@ -568,43 +879,47 @@ function traceFrom(who, x, z, ry, w) {
     if (off > 0.75) continue;                            // the width of a body
     if (d < bestD) { bestD = d; best = id; }
   }
+  if (best && shotBlocked(x, z, w.p[best].x, w.p[best].z)) return null;
   return best;
 }
 
 let firing = false;
 async function fire() {
-  if (firing || !W || viewAt !== null || refused) return;
+  if (!lockedIn || firing || !W || viewAt !== null || refused) return;
   const me = W.p['you']; if (!me || !me.alive) return;
   if (me.ammo <= 0) { stat('empty — press R', 'bad'); return; }
   firing = true; setTimeout(() => firing = false, 130);
-  const hit = traceFrom('you', me.x, me.z, Math.round(yaw * 100), W);
+  const ry = Math.round(yaw * 100);
+  if (ry !== me.ry && !(await append({ event: 'player.moved', who: 'you', x: me.x, z: me.z, ry }))) return;
+  const current = W.p['you'];
+  const hit = traceFrom('you', current.x, current.z, current.ry, W);
   muzzleFlash();
-  await append({ event: 'player.fired', who: 'you', hit: hit || null });
-  if (hit) await resolveHit(hit, 'you');
+  const shot = await append({ event: 'player.fired', who: 'you', hit: hit || null });
+  if (shot && hit) await resolveHit(hit, 'you', shot);
 }
 async function reload() {
-  if (!W || viewAt !== null) return;
+  if (!lockedIn || !W || viewAt !== null || refused) return;
   const me = W.p['you']; if (!me || !me.alive || me.ammo === MAG) return;
   await append({ event: 'player.fired', who: 'you', reload: true });
   stat('reloaded', 'ok');
 }
 // A hit and a death are separate frames on purpose: the damage is a fact, and the
 // death is a consequence of the damage that the record has to be able to show.
-async function resolveHit(target, by) {
-  await append({ event: 'player.hit', who: target, by, damage: DAMAGE });
+async function resolveHit(target, by, shot) {
+  const hit = await append({ event: 'player.hit', who: target, by, damage: DAMAGE,
+                             shot_seq: shot.seq, shot_hash: shot.frame_hash });
+  if (!hit) return;
   const t = W.p[target];
   if (t && t.hp <= 0) {
-    await append({ event: 'player.died', who: target, by });
+    await append({ event: 'player.died', who: target, by, hit_seq: hit.seq, hit_hash: hit.frame_hash });
     setTimeout(() => respawn(target), 2600);
   }
 }
 async function respawn(who) {
   if (!W || viewAt !== null || refused) return;
   const c = W.p[who]; if (!c || c.alive) return;
-  const a = Math.random() * Math.PI * 2, r = 60 + Math.random() * 70;
-  await append({ event: 'player.spawned', who, kind: c.kind,
-                 x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
-                 z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: Math.round(-a * 100) });
+  const p = randomOpenPosition(60, 70);
+  await append({ event: 'player.spawned', who, kind: c.kind, ...p });
 }
 
 function muzzleFlash() {
@@ -625,10 +940,8 @@ async function botTick() {
   const b = BOTS[turn++ % BOTS.length];
   const c = W.p[b.id];
   if (!c) {
-    const a = Math.random() * Math.PI * 2, r = 70 + Math.random() * 60;
-    await append({ event: 'player.spawned', who: b.id, kind: 'bot',
-                   x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
-                   z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: 0 });
+    const p = randomOpenPosition(70, 60);
+    await append({ event: 'player.spawned', who: b.id, kind: 'bot', ...p });
     return;
   }
   if (!c.alive) { respawn(b.id); return; }
@@ -648,16 +961,23 @@ async function botTick() {
   const aimed = Math.abs(((want - c.ry + 314) % 628) - 314) < 22;
   if (aimed && bestD < 200 && Math.random() < 0.6) {
     const hit = traceFrom(b.id, c.x, c.z, c.ry, W);
-    await append({ event: 'player.fired', who: b.id, hit: hit || null });
-    if (hit) await resolveHit(hit, b.id);
+    const shot = await append({ event: 'player.fired', who: b.id, hit: hit || null });
+    if (shot && hit) await resolveHit(hit, b.id, shot);
     return;
   }
   // close the distance, turning as it goes — one step, inside the record's own bound
   const dx = Math.sign(target.x - c.x) * (8 + Math.floor(Math.random() * 8));
   const dz = Math.sign(target.z - c.z) * (8 + Math.floor(Math.random() * 8));
+  let nx = clamp(c.x + (bestD > 40 ? dx : -dx), -LIM, LIM);
+  let nz = clamp(c.z + (bestD > 40 ? dz : -dz), -LIM, LIM);
+  if (movementBlocked(c.x, c.z, nx, nz)) {
+    const alternatives = [[nx, c.z], [c.x, nz], [clamp(c.x - dx, -LIM, LIM), c.z], [c.x, clamp(c.z - dz, -LIM, LIM)]];
+    const open = alternatives.find(([x, z]) => !movementBlocked(c.x, c.z, x, z));
+    if (!open) return;
+    [nx, nz] = open;
+  }
   await append({ event: 'player.moved', who: b.id,
-                 x: clamp(c.x + (bestD > 40 ? dx : -dx), -LIM, LIM),
-                 z: clamp(c.z + (bestD > 40 ? dz : -dz), -LIM, LIM), ry: want });
+                 x: nx, z: nz, ry: want });
   planLerp(before, W);
 }
 function setBots(on) {
@@ -678,8 +998,14 @@ function seekTo(i) {
 }
 $('scrub').oninput = () => { stopPlay(); seekTo(Number($('scrub').value)); };
 function stopPlay() { if (playing) { clearInterval(playing); playing = null; $('replay').textContent = '⏮ Replay the match'; } }
+addEventListener('storage', e => {
+  const field = e.key === LS.record ? 'record' : e.key === LS.frames ? 'frames' : e.key === LS.stream ? 'stream' : null;
+  if (!field) return;
+  if (storageBaseline?.ok && e.newValue === storageBaseline[field]) return;
+  latchStale('another tab changed this match — reload before acting here');
+});
 $('replay').onclick = () => {
-  if (playing) { stopPlay(); viewAt = null; paintMeta(); return; }
+  if (playing) { stopPlay(); viewAt = null; paintMeta(); paintScore(); return; }
   viewAt = 0; $('replay').textContent = '■ Stop the replay';
   playing = setInterval(() => {
     if (viewAt === null || viewAt >= frames.length - 1) { stopPlay(); viewAt = null; paintMeta(); paintScore(); return; }
@@ -688,6 +1014,9 @@ $('replay').onclick = () => {
   }, 180);
 };
 $('fork').onclick = async () => {
+  if (recorder && recorder.state !== 'inactive') { stat('stop recording before forking the match', 'bad'); return; }
+  if (!navigator.locks?.request) { stat('Web Locks are unavailable — Arena is read-only', 'bad'); return; }
+  if (stale) { stat('another tab changed this match — reload before forking it', 'bad'); return; }
   const at = viewAt === null ? frames.length - 1 : viewAt;
   const w = project(frames.slice(0, at + 1));
   if (!confirm('Play on from frame ' + at + '?\n\nEverybody standing there comes with you, into a new match that records where it came from.')) return;
@@ -705,8 +1034,20 @@ $('fork').onclick = async () => {
   }
   const problems = await verifyChain(next, stream);
   if (problems.length) { stat('the fork does not verify — ' + problems[0], 'bad'); return; }
-  if (!save(LS.frames, next) || !save(LS.stream, stream)) { stat('could not write the new match', 'bad'); return; }
+  if (from.frame_hash !== frames[at].frame_hash) { stat('the fork parent changed before it could be written', 'bad'); return; }
+  const committed = await withRecordLock(async () => {
+    const storageProblem = await storageHeadObjection(streamId, frames);
+    if (storageProblem) return { error: storageProblem, stale: true };
+    const writeProblem = persistEnvelope(stream, next);
+    return writeProblem ? { error: writeProblem } : { ok: true };
+  });
+  if (!committed?.ok) {
+    if (committed?.stale) { stale = true; refused = committed.error; }
+    stat((committed?.error || 'the record write failed') + ' — the fork was not published', 'bad');
+    return;
+  }
   stopPlay(); frames = next; streamId = stream; W = project(frames); viewAt = null; refused = null;
+  adoptStorageBaseline();
   $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
   paintMeta(); paintScore();
   stat('a new match, live from frame ' + at + ' of the one before it — everyone at full health', 'ok');
@@ -774,46 +1115,174 @@ function paintScore() {
 }
 
 /* ── export / reset / record ──────────────────────────────────────────────── */
-$('export').onclick = () => {
-  const u = URL.createObjectURL(new Blob([JSON.stringify({ stream_id: streamId, frames }, null, 2)], { type: 'application/json' }));
-  const a = document.createElement('a'); a.href = u; a.download = 'frame-arena-match.json'; document.body.append(a); a.click(); a.remove();
-  stat('the match handed to your browser as its chain', 'ok');
+function handDownload(name, blob) {
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = u; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 1000);
+}
+async function exportRecoveryItems(recovery) {
+  let count = 0;
+  for (const item of recovery?.items || []) {
+    const hash = item.raw_sha256 || await sha256Plain(enc.encode(item.raw));
+    const key = item.key.replace(/[^A-Za-z0-9._-]+/g, '-');
+    handDownload('frame-arena-recovery-' + key + '-' + hash.slice(0, 12) + '.raw',
+      new Blob([item.raw], { type: 'application/octet-stream' }));
+    count++;
+  }
+  return count;
+}
+$('export').onclick = async () => {
+  if (activeRecovery) {
+    const count = await exportRecoveryItems(activeRecovery);
+    stat(count + ' unreadable storage value' + (count === 1 ? ' was' : 's were') + ' exported byte-for-byte for recovery', 'ok');
+    return;
+  }
+  handDownload('frame-arena-match.json',
+    new Blob([JSON.stringify({ stream_id: streamId, frames }, null, 2)], { type: 'application/json' }));
+  const recovery = await latestQuarantineEntry();
+  if (recovery) await exportRecoveryItems(recovery);
+  stat(recovery ? 'the match and latest quarantined recovery bytes were exported'
+                : 'the match handed to your browser as its chain', 'ok');
 };
 $('reset').onclick = async () => {
+  if (recorder && recorder.state !== 'inactive') { stat('stop recording before starting a new match', 'bad'); return; }
+  if (!navigator.locks?.request) { stat('Web Locks are unavailable — Arena is read-only', 'bad'); return; }
+  if (stale) { stat('another tab changed this match — reload before resetting it', 'bad'); return; }
   if (!confirm('Start a new match?\n\nThis discards the record in this browser. Export first if you want it.')) return;
-  setBots(false); stopPlay(); viewAt = null; refused = null;
-  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
-  frames = []; streamId = await mintStream(); $('wire').innerHTML = '';
-  await openMatch();
+  setBots(false); stopPlay(); await q;
+  const expectedStorage = storageBaseline;
+  if (!expectedStorage?.ok) { stat('the stored record cannot be read — the existing match is unchanged', 'bad'); return; }
+  const stream = await mintStream();
+  const next = await buildNewMatch(stream);
+  const problems = await verifyChain(next, stream);
+  if (problems.length) { stat('the new match does not verify — ' + problems[0], 'bad'); return; }
+  const committed = await replaceEnvelope(expectedStorage, stream, next, activeRecovery);
+  if (!committed?.ok) {
+    if (committed?.stale) { stale = true; refused = committed.error; }
+    stat((committed?.error || 'the record write failed') + ' — the existing match is unchanged', 'bad');
+    return;
+  }
+  forgetLegacy();
+  frames = next; streamId = stream; W = project(frames); viewAt = null; refused = null; activeRecovery = null;
+  adoptStorageBaseline();
+  held.clear(); moveCarry = 0; motionClock = performance.now(); $('wire').innerHTML = '';
+  for (const f of frames) paintWire(f, true);
+  paintMeta(); paintScore();
   stat('a new match, minted from randomness', 'ok');
 };
-let recorder = null, chunks = [], recStart = 0;
+let recorder = null, chunks = null, recStart = 0, recordingSnapshot = null, captureTracks = null;
+let recordingFailure = null;
+let lastStoppedTracks = [];
+function setRecordingUi(active) {
+  $('rec').textContent = active ? '■ Stop and save' : '● Record';
+  $('rec').classList.toggle('hot', active);
+  $('reset').disabled = active;
+  $('fork').disabled = active;
+}
+function stopCaptureTracks() {
+  lastStoppedTracks = captureTracks ? [...captureTracks] : [];
+  for (const track of lastStoppedTracks) {
+    try { track.stop(); } catch (e) {}
+  }
+}
+function clearRecordingState() {
+  stopCaptureTracks();
+  recorder = null;
+  captureTracks = null;
+  recordingSnapshot = null;
+  chunks = null;
+  recordingFailure = null;
+  setRecordingUi(false);
+}
+function failRecorderSetup(error) {
+  clearRecordingState();
+  stat('the recorder could not start — ' + (error?.message || String(error)), 'bad');
+}
 $('rec').onclick = () => {
-  if (recorder) { try { recorder.stop(); } catch (e) {} return; }
-  if (!window.MediaRecorder || !renderer.domElement.captureStream) { stat('this browser will not record a canvas', 'bad'); return; }
+  if (recorder) {
+    try { recorder.stop(); }
+    catch (e) { clearRecordingState(); stat('the recorder could not stop — ' + e.message, 'bad'); }
+    return;
+  }
+  if (refused || !frames.length) { stat('a verified live match is required before recording', 'bad'); return; }
+  if (!renderer || !window.MediaRecorder || !renderer.domElement.captureStream) { stat('this browser will not record a canvas', 'bad'); return; }
   const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
-  chunks = [];
-  recorder = new MediaRecorder(renderer.domElement.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 8_000_000 } : {});
-  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  recorder.onstop = async () => {
-    const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
-    const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
-    recorder = null; chunks = [];
-    $('rec').textContent = '● Record'; $('rec').classList.remove('hot');
-    if (!blob.size) { stat('the recorder produced nothing', 'bad'); return; }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const name = 'frame-arena-' + stamp + '.webm';
-    for (const [n, bl] of [[name, blob], [name.replace(/\.webm$/, '.frames.json'),
-        new Blob([JSON.stringify({ recording: name, seconds: secs, stream_id: streamId, frames }, null, 2)], { type: 'application/json' })]]) {
-      const u = URL.createObjectURL(bl);
-      const a = document.createElement('a'); a.href = u; a.download = n; document.body.append(a); a.click(); a.remove();
-    }
-    const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-    const hex = [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
-    stat('saved ' + name + ' (' + secs + 's) with the chain that produced it · sha256 ' + hex.slice(0, 20) + '…', 'ok');
-  };
-  recorder.start(1000); recStart = Date.now();
-  $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
+  try {
+    chunks = [];
+    recordingFailure = null;
+    const startFrame = frames[frames.length - 1];
+    recordingSnapshot = {
+      stream_id: streamId,
+      start: { seq: startFrame.seq, frame_hash: startFrame.frame_hash },
+    };
+    const capture = renderer.domElement.captureStream(30);
+    captureTracks = [...capture.getTracks()];
+    recorder = new MediaRecorder(capture, type ? { mimeType: type, videoBitsPerSecond: 8_000_000 } : {});
+    let finalized = false;
+    recorder.ondataavailable = e => { if (chunks && e.data && e.data.size) chunks.push(e.data); };
+    recorder.onerror = e => {
+      if (!recordingFailure) recordingFailure = e?.error?.message || e?.message || e?.name || 'MediaRecorder runtime error';
+      stopCaptureTracks();
+      stat('the recording failed — ' + recordingFailure + '. No files will be saved.', 'bad');
+      if (recorder?.state !== 'inactive') {
+        try { recorder.stop(); }
+        catch (stopError) {
+          const reason = recordingFailure + '; stop failed — ' + stopError.message;
+          clearRecordingState();
+          stat('the recording failed — ' + reason + '. No files were saved.', 'bad');
+        }
+      } else {
+        const failedRecorder = recorder;
+        queueMicrotask(() => failedRecorder?.onstop?.());
+      }
+    };
+    recorder.onstop = async () => {
+      if (finalized) return;
+      finalized = true;
+      const failure = recordingFailure;
+      if (failure) {
+        clearRecordingState();
+        stat('the recording failed — ' + failure + '. No files were saved.', 'bad');
+        return;
+      }
+      const finishedRecorder = recorder;
+      const finishedChunks = chunks || [];
+      const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
+      const blob = new Blob(finishedChunks, { type: finishedRecorder?.mimeType || 'video/webm' });
+      const endFrame = frames[frames.length - 1];
+      const snapshot = recordingSnapshot && recordingSnapshot.stream_id === streamId && endFrame ? {
+        stream_id: streamId,
+        recording_window: {
+          start: recordingSnapshot.start,
+          end: { seq: endFrame.seq, frame_hash: endFrame.frame_hash },
+        },
+        frames: structuredClone(frames),
+      } : null;
+      clearRecordingState();
+      if (!blob.size) { stat('the recorder produced nothing', 'bad'); return; }
+      if (!snapshot) { stat('the recording stream changed — no misleading sidecar was written', 'bad'); return; }
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = 'frame-arena-' + stamp + '.webm';
+      const bytes = blob.size;
+      const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+      const sha256 = [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
+      const sidecar = new Blob([JSON.stringify(
+        { recording: name, seconds: secs, bytes, sha256, ...snapshot }, null, 2)], { type: 'application/json' });
+      const urls = [];
+      for (const [n, bl] of [[name, blob], [name.replace(/\.webm$/, '.frames.json'), sidecar]]) {
+        const u = URL.createObjectURL(bl);
+        urls.push(u);
+        const a = document.createElement('a'); a.href = u; a.download = n; document.body.append(a); a.click(); a.remove();
+      }
+      setTimeout(() => { for (const u of urls) URL.revokeObjectURL(u); }, 1000);
+      stat('saved ' + name + ' (' + secs + 's, ' + bytes + ' bytes) with the chain that produced it · sha256 ' + sha256.slice(0, 20) + '…', 'ok');
+    };
+    recorder.start(1000);
+    recStart = Date.now();
+    setRecordingUi(true);
+  } catch (e) {
+    failRecorderSetup(e);
+  }
 };
 
 /* ── loop ─────────────────────────────────────────────────────────────────── */
@@ -824,7 +1293,6 @@ function resize() {
 addEventListener('resize', resize);
 function tick() {
   requestAnimationFrame(tick);
-  stepYou();
   const w = viewed();
   if (w) drawWorld(w);
   const me = w && w.p['you'];
@@ -839,35 +1307,150 @@ function tick() {
   renderer.render(scene, camera);
 }
 
-async function openMatch() {
-  await append({ event: 'match.opened', title: 'Frame Arena' });
-  await append({ event: 'player.spawned', who: 'you', kind: 'person', x: 0, z: 110, ry: 0 });
-  for (const b of BOTS) {
-    const a = Math.random() * Math.PI * 2, r = 80 + Math.random() * 50;
-    await append({ event: 'player.spawned', who: b.id, kind: 'bot',
-                   x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
-                   z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: Math.round(-a * 100) });
+function randomOpenPosition(minRadius, spread) {
+  for (let tries = 0; tries < 100; tries++) {
+    const a = Math.random() * Math.PI * 2, r = minRadius + Math.random() * spread;
+    const x = clamp(Math.round(Math.cos(a) * r), -LIM, LIM);
+    const z = clamp(Math.round(Math.sin(a) * r), -LIM, LIM);
+    if (!positionBlocked(x, z)) return { x, z, ry: Math.round(-a * 100) };
   }
+  return { x: -120, z: -120, ry: 0 };
+}
+async function buildNewMatch(stream) {
+  const payloads = [
+    { event: 'match.opened', title: 'Frame Arena' },
+    { event: 'player.spawned', who: 'you', kind: 'person', x: 0, z: 110, ry: 0 },
+  ];
+  for (const b of BOTS) {
+    const p = randomOpenPosition(80, 50);
+    payloads.push({ event: 'player.spawned', who: b.id, kind: 'bot', ...p });
+  }
+  const next = [];
+  let prev = null;
+  for (const [i, payload] of payloads.entries()) {
+    const frame = await buildFrame(stream, i, payload, prev ? prev.payload_hash : null, prev ? prev.utc : null);
+    next.push(frame); prev = frame;
+  }
+  return next;
+}
+function recoveryFromReads(reason, reads) {
+  const items = reads.flatMap(([key, read]) =>
+    read.state !== 'missing' && typeof read.raw === 'string' ? [{ key, raw: read.raw }] : []);
+  return items.length ? { reason, items } : null;
+}
+async function readBootRecord() {
+  const expectedStorage = storageSnapshot();
+  if (!expectedStorage.ok) return { error: 'the stored record cannot be read. Start a new match after storage is available.' };
+  const primary = readJson(LS.record);
+  const legacyFrames = readJson(LS.frames);
+  const legacyStream = readJson(LS.stream);
+  const allReads = [[LS.record, primary], [LS.frames, legacyFrames], [LS.stream, legacyStream]];
+  if (primary.state === 'unreadable') return {
+    error: 'the stored record is unreadable. Export its raw recovery bytes or start a new match.',
+    recovery: recoveryFromReads('unreadable stored record — ' + primary.error, allReads),
+  };
+  if (primary.state === 'ok') {
+    const shape = envelopeObjection(primary.value);
+    if (shape) return {
+      error: shape + '. Export its raw recovery bytes or start a new match.',
+      recovery: recoveryFromReads(shape, allReads),
+    };
+    const problems = await verifyChain(primary.value.frames, primary.value.stream_id);
+    if (problems.length) return {
+      error: 'this match does not verify — ' + problems[0] + '. Export its raw recovery bytes or start a new match.',
+      recovery: recoveryFromReads(problems[0], allReads),
+    };
+    return { record: primary.value };
+  }
+
+  if (legacyFrames.state === 'missing' && legacyStream.state === 'missing') return {};
+  if (legacyFrames.state !== 'ok' || legacyStream.state !== 'ok')
+    return {
+      error: 'the legacy match is incomplete or unreadable. Export its raw recovery bytes or start a new match.',
+      recovery: recoveryFromReads('legacy match is incomplete or unreadable',
+        [[LS.frames, legacyFrames], [LS.stream, legacyStream]]),
+    };
+  if (!Array.isArray(legacyFrames.value) || typeof legacyStream.value !== 'string')
+    return {
+      error: 'the legacy match has the wrong shape. Export its raw recovery bytes or start a new match.',
+      recovery: recoveryFromReads('legacy match has the wrong shape',
+        [[LS.frames, legacyFrames], [LS.stream, legacyStream]]),
+    };
+  const problems = await verifyChain(legacyFrames.value, legacyStream.value);
+  if (problems.length) return {
+    error: 'the legacy match does not verify — ' + problems[0] + '. Export its raw recovery bytes or start a new match.',
+    recovery: recoveryFromReads('legacy match does not verify — ' + problems[0],
+      [[LS.frames, legacyFrames], [LS.stream, legacyStream]]),
+  };
+  const record = { version: STORAGE_VERSION, stream_id: legacyStream.value, frames: legacyFrames.value };
+  const committed = await replaceEnvelope(expectedStorage, record.stream_id, record.frames);
+  if (!committed?.ok) {
+    if (committed?.stale) return readBootRecord();
+    return { record, error: (committed?.error || 'the migration write failed') + '. The verified legacy match is open read-only until migration succeeds.' };
+  }
+  forgetLegacy();
+  adoptStorageBaseline();
+  return { record };
 }
 
-(async function boot() {
-  const disk = load(LS.frames), ds = load(LS.stream);
-  if (Array.isArray(disk) && disk.length && typeof ds === 'string') {
-    const problems = await verifyChain(disk, ds);
+async function boot() {
+  storageBaseline = storageSnapshot();
+  stale = false;
+  const loaded = await readBootRecord();
+  activeRecovery = loaded.recovery || null;
+  if (loaded.record) {
+    frames = loaded.record.frames; streamId = loaded.record.stream_id;
+    $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+  }
+  if (loaded.error) {
+    refused = loaded.error;
+    stat(refused, 'bad');
+  } else if (!loaded.record) {
+    const expectedStorage = storageSnapshot();
+    const stream = await mintStream();
+    const next = await buildNewMatch(stream);
+    const problems = await verifyChain(next, stream);
     if (problems.length) {
-      frames = disk; streamId = ds;
-      refused = 'this match does not verify — ' + problems[0] + '. Nothing will be written until you start a new one.';
+      refused = 'the new match does not verify — ' + problems[0];
       stat(refused, 'bad');
     } else {
-      frames = disk; streamId = ds;
-      $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+      const committed = expectedStorage.ok ? await replaceEnvelope(expectedStorage, stream, next)
+                                           : { error: 'the stored record cannot be read' };
+      if (!committed?.ok && committed?.stale) {
+        const winner = await readBootRecord();
+        if (winner.record && !winner.error) {
+          frames = winner.record.frames; streamId = winner.record.stream_id;
+          adoptStorageBaseline();
+          $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+        } else {
+          refused = winner.error || committed.error;
+          stat(refused, 'bad');
+        }
+      } else if (!committed?.ok) {
+        refused = (committed?.error || 'the record write failed') + '. No match was published.';
+        stat(refused, 'bad');
+      } else {
+        frames = next; streamId = stream; activeRecovery = null;
+        adoptStorageBaseline();
+      }
     }
   }
-  if (!frames.length) { streamId = await mintStream(); await openMatch(); }
+  if (!navigator.locks?.request && frames.length && !refused) {
+    refused = 'Web Locks are unavailable — Arena is read-only; replay and export remain available';
+    stat(refused, 'bad');
+  }
   W = project(frames);
   const me = W.p['you']; if (me) yaw = me.ry / 100;
   paintMeta(); paintScore();
   resize(); tick();
   if (!refused) stat(frames.length + ' frames, all verified — click to take the controls, or send the bots in', 'ok');
-})();
+}
+if (THREE_READY) {
+  boot();
+} else {
+  refused = 'the 3D runtime did not load — the match was not opened or changed';
+  $('lockhint').innerHTML = '<div>3D runtime unavailable</div><small>Check the network connection and reload. Stored match data was left untouched.</small>';
+  for (const control of document.querySelectorAll('button,input')) control.disabled = true;
+  stat(refused, 'bad');
+}
 </script>

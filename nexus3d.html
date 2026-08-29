@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>The Nexus, Replayed</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three-r128.min.js"></script>
 <style>
   :root{
     --bg:#06090f; --panel:#0c1119; --line:#1a2331; --ink:#e9eff7; --dim:#7488a0;
@@ -12,9 +12,10 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden;
+       display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--line);
-         background:var(--panel);flex-wrap:wrap}
+         background:var(--panel);flex-wrap:wrap;flex:0 0 auto}
   h1{font-size:13.5px;margin:0;font-weight:600}
   h1 span{color:var(--dim);font-weight:400}
   .grow{flex:1}
@@ -23,7 +24,7 @@
   button:hover{border-color:#27374a}
   button.go{background:var(--accent);border-color:var(--accent);color:#04121b;font-weight:600}
   button.hot{background:#ef4444;border-color:#ef4444;color:#1a0505;font-weight:600}
-  main{display:flex;height:calc(100% - 47px)}
+  main{display:flex;flex:1;min-height:0}
   #view{flex:1;min-width:0;position:relative}
   canvas{display:block;width:100%;height:100%}
   #hud{position:absolute;left:14px;top:12px;font:11.5px/1.7 var(--mono);color:var(--dim);
@@ -57,6 +58,19 @@
   .stat{padding:7px 13px;border-top:1px solid var(--line);font:10.5px/1.5 var(--mono);color:var(--dim);min-height:30px}
   .stat.ok{color:var(--ok)} .stat.bad{color:var(--bad)}
   input[type=range]{width:100%}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media (max-width:700px) {
+    body{overflow:auto}
+    h1{flex:1 0 100%}
+    h1 span{display:none}
+    .grow{display:none}
+    main{flex-direction:column}
+    #view{flex:1 1 auto;min-height:230px}
+    #say{width:calc(100% - 20px);bottom:10px}
+    aside{width:100%;flex:0 0 48%;max-height:48%;border-left:0;border-top:1px solid var(--line)}
+    .band{padding:6px 10px}
+    .wire{padding:5px 8px}
+  }
 </style>
 
 <header>
@@ -80,7 +94,7 @@
   <aside>
     <div class="band"><h2>The stream</h2><div class="kv" id="meta"></div></div>
     <div class="band"><h2>In the room</h2><div class="who" id="who"></div></div>
-    <div class="band"><h2>Stand anywhere in it</h2><input id="scrub" type="range" min="0" value="0" step="1"><div id="atframe" style="font:11px var(--mono);color:var(--dim)"></div></div>
+    <div class="band"><h2>Stand anywhere in it</h2><input id="scrub" type="range" min="0" value="0" step="1" aria-label="Frame to view"><div id="atframe" style="font:11px var(--mono);color:var(--dim)"></div></div>
     <div class="wire" id="wire"></div>
     <div class="stat" id="stat">…</div>
   </aside>
@@ -148,44 +162,6 @@ async function Hb(space, bytes) {
 // one while telling the reader to run the other is telling them to check the wrong thing.
 async function sha256Plain(bytes) { return sha256Hex(bytes); }
 
-/* ── §6 identity — minted once, from randomness ──────────────────────────── */
-async function mintStream() {
-  // §6.2 keyless: the tail is Hb over sixteen random octets. It is NOT derived
-  // from "@owner/slug" — a name-hash is the one thing the spec calls a cardinal
-  // sin, because two different things with the same name would collide.
-  const uuid = crypto.getRandomValues(new Uint8Array(16));
-  const tail = await Hb('rapp/1:rappid', uuid);
-  const instance = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
-  const rappid = `rappid:@${OWNER}/${SLUG}:${tail}`;
-  return `${rappid}:${instance.slice(0, 16)}`;      // memory-stream = rappid ":" instance
-}
-
-/* ── §7 the frame ────────────────────────────────────────────────────────── */
-function utcNow(floor) {
-  // exactly YYYY-MM-DDTHH:MM:SS.mmmZ — 24 bytes, three fractional digits
-  let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
-  // §7.5 step 4 forbids time running backwards along a chain, and the reader
-  // enforced it while the writer did not — so one backward clock step (an NTP
-  // correction after sleep, a VM resume) wrote a frame the app then refused
-  // forever, with the board blank on every load and no way back but Reset.
-  // The comparison is bytewise on this fixed form, which is chronological.
-  if (floor && u < floor) u = floor;
-  return u;
-}
-async function buildFrame(streamId, seq, payload, prev, floorUtc) {
-  const payload_hash = await H('rapp/1:particle', payload);
-  const pre = {
-    spec: SPEC, kind: KIND, stream_id: streamId, seq, utc: utcNow(floorUtc),
-    payload, payload_hash,
-    prev,                     // predecessor's payload_hash (the worldline link)
-    prev_wave: null,          // §7.4: null on every memory stream, always
-  };
-  // the wave pre-image is the frame minus exactly frame_hash and sig
-  const frame_hash = await H('rapp/1:wave', pre);
-  return { ...pre, frame_hash, sig: null };
-}
-
-
 /* ── the room is a projection; the chain is the record ───────────────────────
    Every arrival, step, word and departure is one rapp/1 frame appended to a chain
    in this browser. The 3D room is what you get when you replay that chain from its
@@ -193,9 +169,18 @@ async function buildFrame(streamId, seq, payload, prev, floorUtc) {
    from any frame is a real new world rather than a saved game. */
 const $ = (id) => document.getElementById(id);
 const SPEC = 'rapp/1', KIND = 'memory.save';
-const LS = { frames: 'nexus3d.frames', stream: 'nexus3d.stream', head: 'nexus3d.head' };
+const RECORD_VERSION = 1;
+const RECORD_KEY = 'nexus3d.record.v1';
+const RECORD_LOCK = 'nexus3d.record.v1.write';
+const WEB_LOCKS_AVAILABLE = !!(navigator.locks && navigator.locks.request);
+const LEGACY = { frames: 'nexus3d.frames', stream: 'nexus3d.stream', head: 'nexus3d.head' };
 const ROOM = { w: 26, d: 26 };
+const POSITION_LIMIT = ROOM.w * 5 - 6;
+const MAX_WHO = 64, MAX_TEXT = 140, MAX_TITLE = 140;
 const EVENTS = ['room.opened', 'peer.joined', 'peer.moved', 'peer.said', 'peer.left'];
+const STREAM_RE = /^rappid:@kody-w\/nexus3d:[0-9a-f]{64}:[0-9a-f]{16}$/;
+const HASH_RE = /^[0-9a-f]{64}$/;
+const UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 const RESIDENTS = [
   { id: 'atlas',  color: 0xfbbf24, says: ['mapping the north arc', 'three exits, one is new', 'the floor plan changed under us'] },
@@ -205,11 +190,76 @@ const RESIDENTS = [
 ];
 
 let frames = [], streamId = null, world = null, viewAt = null, refused = null;
-let playing = null, live = null, meAt = { x: 0, z: 6, ry: 0 };
+let playing = null, live = null, meAt = { x: 0, z: 60, ry: 0 };
+let currentRaw = null, currentQuarantine = [], storageAvailable = true, mutationBlocked = null;
 const stat = (m, c) => { const e = $('stat'); e.textContent = m; e.className = 'stat ' + (c || ''); };
-const load = (k) => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
-const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
 function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+function exactKeys(v, keys) { return isPlainObject(v) && Object.keys(v).sort().join(',') === [...keys].sort().join(','); }
+function readRaw(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return { ok: true, exists: raw !== null, raw };
+  } catch (error) {
+    return { ok: false, exists: false, raw: null, error: error.message || String(error) };
+  }
+}
+function parseRaw(raw) {
+  try { return { ok: true, value: JSON.parse(raw) }; }
+  catch (error) { return { ok: false, error: error.message || String(error) }; }
+}
+function quarantineEntry(source, raw, error) {
+  return { source, raw: String(raw == null ? '' : raw), error: String(error), observed_at: utcNow() };
+}
+function makeEnvelope(stream, list, quarantine = currentQuarantine) {
+  return { version: RECORD_VERSION, stream_id: stream, frames: list, quarantine: [...quarantine] };
+}
+function envelopeShapeObjection(v) {
+  if (!exactKeys(v, ['version', 'stream_id', 'frames', 'quarantine'])) return 'record envelope has the wrong fields';
+  if (v.version !== RECORD_VERSION) return 'unsupported record version';
+  if (typeof v.stream_id !== 'string') return 'record stream is not a string';
+  if (!Array.isArray(v.frames)) return 'record frames are not an array';
+  if (!Array.isArray(v.quarantine)) return 'record quarantine is not an array';
+  return null;
+}
+function writeEnvelope(stream, list, quarantine = currentQuarantine) {
+  const envelope = makeEnvelope(stream, list, quarantine);
+  const raw = JSON.stringify(envelope);
+  try {
+    localStorage.setItem(RECORD_KEY, raw);
+    if (localStorage.getItem(RECORD_KEY) !== raw) throw new Error('record read-back did not match');
+  } catch (error) {
+    storageAvailable = false;
+    return { ok: false, error: error.message || String(error) };
+  }
+  currentRaw = raw;
+  currentQuarantine = envelope.quarantine;
+  storageAvailable = true;
+  return { ok: true, raw };
+}
+async function withRecordLock(fn) {
+  if (!WEB_LOCKS_AVAILABLE) return { ok: false, lockUnavailable: true };
+  return navigator.locks.request(RECORD_LOCK, { mode: 'exclusive' }, fn);
+}
+function headOf(list) { return list.length ? list[list.length - 1].frame_hash : null; }
+function block(message) {
+  refused = message;
+  setLive(false);
+  stopPlay();
+  stat(message, 'bad');
+}
+function setMutationControlsDisabled(disabled) {
+  for (const id of ['live', 'fork', 'rec', 'reset', 'msg', 'send']) {
+    $(id).disabled = disabled;
+    if (disabled) $(id).title = mutationBlocked || 'read-only';
+    else $(id).removeAttribute('title');
+  }
+}
+function enterLockReadOnly(message) {
+  mutationBlocked = message;
+  setLive(false);
+  setMutationControlsDisabled(true);
+  stat(message, 'bad');
+}
 
 function utcNow(floor) {
   let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
@@ -218,6 +268,14 @@ function utcNow(floor) {
 }
 function FUTURE_LIMIT() {
   return new Date(Date.now() + 24 * 3600 * 1000).toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+}
+function isCanonicalUtc(v) {
+  if (typeof v !== 'string' || !UTC_RE.test(v)) return false;
+  try { return new Date(v).toISOString() === v; } catch (e) { return false; }
+}
+function normalizeRy(v) {
+  const turn = Math.round(Math.PI * 200), half = Math.round(Math.PI * 100);
+  return ((Math.round(v) + half) % turn + turn) % turn - half;
 }
 async function mintStream() {
   // §6.2: minted from randomness. NEVER sha256 of a name — two different rooms with
@@ -263,20 +321,64 @@ function project(list) {
 
 // The same rule the verifier enforces, at the door that WRITES. A door that can write
 // a frame the verifier refuses is a door that can brick the record.
-function payloadObjection(p, list) {
+function validWho(v) { return typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v); }
+function boundedPosition(v) { return Number.isSafeInteger(v) && Math.abs(v) <= POSITION_LIMIT; }
+function boundedRotation(v) { return Number.isSafeInteger(v) && v >= -314 && v <= 314; }
+function lastPosition(list, who) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const f = list[i], p = f.payload;
+    if (p.who !== who) continue;
+    if (p.event === 'peer.left') return null;
+    if (p.event === 'peer.moved' || p.event === 'peer.joined') return { x: p.x, z: p.z, utc: f.utc };
+  }
+  return null;
+}
+function payloadObjection(p, list, frameUtc) {
   if (!isPlainObject(p)) return 'not a payload';
   if (!EVENTS.includes(p.event)) return 'not an event this room knows';
-  if (!list.length) return p.event === 'room.opened' ? null : 'a stream begins at its genesis';
+  if (!list.length) {
+    if (p.event !== 'room.opened') return 'a stream begins at its genesis';
+    const base = exactKeys(p, ['event', 'title']);
+    const fork = exactKeys(p, ['event', 'title', 'from']);
+    if (!base && !fork) return 'genesis has the wrong fields';
+    if (typeof p.title !== 'string' || !p.title.trim() || p.title !== p.title.trim() || p.title.length > MAX_TITLE) return 'invalid room title';
+    if (fork) {
+      if (!exactKeys(p.from, ['stream_id', 'seq', 'frame_hash'])) return 'fork parent has the wrong fields';
+      if (!STREAM_RE.test(p.from.stream_id)) return 'fork parent stream is not a rappid';
+      if (!Number.isSafeInteger(p.from.seq) || p.from.seq < 0) return 'fork parent sequence is invalid';
+      if (!HASH_RE.test(p.from.frame_hash)) return 'fork parent hash is invalid';
+    }
+    return null;
+  }
   if (p.event === 'room.opened') return 'a genesis can only be the first frame';
-  if (typeof p.who !== 'string' || !p.who) return 'that names nobody';
+  if (!validWho(p.who)) return 'invalid peer identity';
   const w = project(list);
-  if (p.event === 'peer.joined') return w.peers[p.who] ? 'already in the room' : null;
+  if (p.event === 'peer.joined') {
+    if (!exactKeys(p, ['event', 'who', 'kind', 'x', 'z', 'ry'])) return 'join has the wrong fields';
+    if (w.peers[p.who]) return 'already in the room';
+    if (p.kind !== 'person' && p.kind !== 'agent') return 'invalid peer kind';
+    if (!boundedPosition(p.x) || !boundedPosition(p.z)) return 'join position is outside the room';
+    if (!boundedRotation(p.ry)) return 'join rotation is invalid';
+    return null;
+  }
   if (!w.peers[p.who]) return 'not in the room';
   if (p.event === 'peer.moved') {
-    if (!Number.isSafeInteger(p.x) || !Number.isSafeInteger(p.z)) return 'a position must be whole tenths';
-    if (Math.abs(p.x) > ROOM.w * 5 || Math.abs(p.z) > ROOM.d * 5) return 'outside the room';
+    if (!exactKeys(p, ['event', 'who', 'x', 'z', 'ry'])) return 'move has the wrong fields';
+    if (!boundedPosition(p.x) || !boundedPosition(p.z)) return 'move position is outside the room';
+    if (!boundedRotation(p.ry)) return 'move rotation is invalid';
+    const before = lastPosition(list, p.who);
+    if (!before || !isCanonicalUtc(before.utc) || !isCanonicalUtc(frameUtc)) return 'movement has no valid clock';
+    const elapsed = Date.parse(frameUtc) - Date.parse(before.utc);
+    const distance = Math.hypot(p.x - before.x, p.z - before.z);
+    if (distance > 0 && elapsed < 200) return 'movement is too soon after the prior position';
+    const allowance = 3 + Math.max(0, elapsed) * 0.025;
+    if (distance > allowance) return 'movement exceeds the wall-clock speed limit';
+  } else if (p.event === 'peer.said') {
+    if (!exactKeys(p, ['event', 'who', 'text'])) return 'speech has the wrong fields';
+    if (typeof p.text !== 'string' || !p.text.trim() || p.text !== p.text.trim() || p.text.length > MAX_TEXT) return 'invalid speech';
+  } else if (p.event === 'peer.left') {
+    if (!exactKeys(p, ['event', 'who'])) return 'departure has the wrong fields';
   }
-  if (p.event === 'peer.said' && (typeof p.text !== 'string' || !p.text)) return 'nothing was said';
   return null;
 }
 
@@ -284,6 +386,7 @@ async function verifyChain(list, expectStream) {
   const problems = [];
   if (!Array.isArray(list)) return ['that is not a chain'];
   let prev = null;
+  const chainStream = expectStream || (isPlainObject(list[0]) ? list[0].stream_id : null);
   const KEYS = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
   for (let i = 0; i < list.length; i++) {
     const f = list[i];
@@ -292,15 +395,25 @@ async function verifyChain(list, expectStream) {
       if (Object.keys(f).sort().join(',') !== KEYS) { problems.push('frame ' + i + ': key set is not the eleven'); continue; }
       if (f.spec !== SPEC) problems.push('frame ' + i + ': not ' + SPEC);
       if (f.kind !== KIND) problems.push('frame ' + i + ': kind is not ' + KIND);
-      if (expectStream && f.stream_id !== expectStream) problems.push('frame ' + i + ': a different stream');
+      if (typeof f.stream_id !== 'string' || !STREAM_RE.test(f.stream_id)) problems.push('frame ' + i + ': stream is not a rappid');
+      if (chainStream && f.stream_id !== chainStream) problems.push('frame ' + i + ': a different stream');
       if (f.seq !== i) problems.push('frame ' + i + ': seq is ' + f.seq);
       if (f.sig !== null) problems.push('frame ' + i + ': sig must be null');
       if (f.prev_wave !== null) problems.push('frame ' + i + ': prev_wave must be null');
+      if (typeof f.payload_hash !== 'string' || !HASH_RE.test(f.payload_hash)) problems.push('frame ' + i + ': payload_hash is malformed');
+      if (typeof f.frame_hash !== 'string' || !HASH_RE.test(f.frame_hash)) problems.push('frame ' + i + ': frame_hash is malformed');
+      if (f.prev !== null && !HASH_RE.test(f.prev)) problems.push('frame ' + i + ': prev is malformed');
       if (f.prev !== (prev ? prev.payload_hash : null)) problems.push('frame ' + i + ': prev does not link');
-      if (prev && f.utc < prev.utc) problems.push('frame ' + i + ': time runs backwards');
-      if (f.utc > FUTURE_LIMIT()) problems.push('frame ' + i + ': far in the future');
-      const o = payloadObjection(f.payload, list.slice(0, i));
+      if (!isCanonicalUtc(f.utc)) problems.push('frame ' + i + ': utc is not canonical');
+      else {
+        if (prev && f.utc < prev.utc) problems.push('frame ' + i + ': time runs backwards');
+        if (f.utc > FUTURE_LIMIT()) problems.push('frame ' + i + ': far in the future');
+      }
+      const o = payloadObjection(f.payload, list.slice(0, i), f.utc);
       if (o) problems.push('frame ' + i + ': ' + o);
+      if (i === 0 && isPlainObject(f.payload) && f.payload.from && f.payload.from.stream_id === f.stream_id) {
+        problems.push('frame 0: fork parent is the child stream');
+      }
       if (await H('rapp/1:particle', f.payload) !== f.payload_hash) problems.push('frame ' + i + ': payload_hash does not match');
       const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
       if (await H('rapp/1:wave', pre) !== f.frame_hash) problems.push('frame ' + i + ': frame_hash does not match');
@@ -312,74 +425,126 @@ async function verifyChain(list, expectStream) {
   return problems;
 }
 
+async function inspectEnvelope(raw) {
+  const parsed = parseRaw(raw);
+  if (!parsed.ok) return { state: 'malformed', raw, error: 'record JSON is malformed — ' + parsed.error };
+  const shape = envelopeShapeObjection(parsed.value);
+  if (shape) return { state: 'malformed', raw, error: shape };
+  const problems = await verifyChain(parsed.value.frames, parsed.value.stream_id);
+  if (problems.length) return { state: 'corrupt', raw, envelope: parsed.value, error: problems[0], problems };
+  return { state: 'valid', raw, envelope: parsed.value };
+}
+async function inspectStoredRecord() {
+  const read = readRaw(RECORD_KEY);
+  if (!read.ok) return { state: 'unavailable', error: read.error };
+  if (!read.exists) return { state: 'missing', raw: null };
+  return inspectEnvelope(read.raw);
+}
+function syncMeAt() {
+  const me = world && world.peers && world.peers.you;
+  meAt = me ? { x: me.x, z: me.z, ry: normalizeRy(me.ry || 0) } : { x: 0, z: 60, ry: 0 };
+}
+function adoptRecord(envelope, raw) {
+  frames = envelope.frames;
+  streamId = envelope.stream_id;
+  currentQuarantine = envelope.quarantine;
+  currentRaw = raw;
+  storageAvailable = true;
+  refused = null;
+  mutationBlocked = null;
+  setMutationControlsDisabled(false);
+  viewAt = null;
+  world = project(frames);
+  syncMeAt();
+}
+function staleRecord(message = 'another tab has changed this room — reload before acting here') {
+  block(message);
+}
+
 /* ── appending, serialised, with the disk compared before it is written ────── */
 let queue = Promise.resolve();
 function append(payload) { const r = queue.then(() => appendOne(payload)); queue = r.then(() => {}, () => {}); return r; }
 
 async function appendOne(payload) {
+  if (mutationBlocked) { stat(mutationBlocked, 'bad'); return null; }
+  if (!storageAvailable) { stat('storage is unavailable — this room is read-only', 'bad'); return null; }
   if (refused) return null;
   if (viewAt !== null) { stat('you are standing in an earlier frame — return to now to act', 'bad'); return null; }
-  const o = payloadObjection(payload, frames);
-  if (o) { stat('refused — ' + o, 'bad'); return null; }
-  const prev = frames[frames.length - 1] || null;
-  const f = await buildFrame(streamId, frames.length, payload, prev ? prev.payload_hash : null, prev ? prev.utc : null);
-  // the same compare-and-swap the Workroom learned to put in ONE place: another tab
-  // holds its own copy, and writing our array over theirs deletes their frames silently
-  const disk = load(LS.frames), diskStream = load(LS.stream);
-  const diskHead = Array.isArray(disk) && disk.length && isPlainObject(disk[disk.length - 1]) ? disk[disk.length - 1].frame_hash : null;
-  const mine = frames.length ? frames[frames.length - 1].frame_hash : null;
-  const bothEmpty = (!Array.isArray(disk) || !disk.length) && !frames.length;
-  if (!bothEmpty && (diskStream !== streamId || diskHead !== mine)) {
-    refused = 'another tab has changed this room — reload before acting here';
-    stat(refused, 'bad'); return null;
-  }
-  frames.push(f);
-  if (!save(LS.frames, frames) || !save(LS.stream, streamId)) {
-    frames.pop();
-    stat('the chain could not be written — that change was refused, not saved', 'bad');
-    return null;
-  }
-  world = project(frames);
-  paintWire(f); paintMeta(); paintWho();
-  return f;
+  return withRecordLock(async () => {
+    if (refused) return null;
+    const stored = await inspectStoredRecord();
+    if (stored.state === 'unavailable') {
+      storageAvailable = false;
+      block('storage is unavailable — this room is read-only');
+      return null;
+    }
+    if (stored.state !== 'valid') {
+      staleRecord('the stored record changed or became invalid — reload before acting here');
+      return null;
+    }
+    const disk = stored.envelope.frames;
+    if (stored.envelope.stream_id !== streamId || headOf(disk) !== headOf(frames) || stored.raw !== currentRaw) {
+      staleRecord();
+      return null;
+    }
+    const prev = frames[frames.length - 1] || null;
+    const atUtc = utcNow(prev ? prev.utc : null);
+    const o = payloadObjection(payload, frames, atUtc);
+    if (o) { stat('refused — ' + o, 'bad'); return null; }
+    const f = await buildFrame(streamId, frames.length, payload, prev ? prev.payload_hash : null, atUtc);
+    const next = [...frames, f];
+    const problems = await verifyChain(next, streamId);
+    if (problems.length) { stat('refused — ' + problems[0], 'bad'); return null; }
+    const wrote = writeEnvelope(streamId, next);
+    if (!wrote.ok) {
+      block('storage is unavailable — the change was not saved and this room is read-only');
+      return null;
+    }
+    frames = next;
+    world = project(frames);
+    paintWire(f); paintMeta(); paintWho();
+    stat(frames.length + ' frames, all verified — walk with WASD, or let them work', 'ok');
+    return f;
+  });
 }
 
 /* ── the room, in three dimensions ────────────────────────────────────────── */
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x06090f);
-scene.fog = new THREE.FogExp2(0x06090f, 0.028);
-const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 220);
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-$('view').append(renderer.domElement);
+const THREE_READY = !!globalThis.THREE;
+let scene = null, camera = null, renderer = null, glow = null, bodies = null, GEO = null;
+if (THREE_READY) {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x06090f);
+  scene.fog = new THREE.FogExp2(0x06090f, 0.028);
+  camera = new THREE.PerspectiveCamera(58, 1, 0.1, 220);
+  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  $('view').append(renderer.domElement);
 
-scene.add(new THREE.AmbientLight(0x9db4d0, 0.4));
-const key = new THREE.DirectionalLight(0xdceeff, 0.8); key.position.set(8, 18, 6); scene.add(key);
-const glow = new THREE.PointLight(0x38bdf8, 1.1, 40); glow.position.set(0, 5, 0); scene.add(glow);
+  scene.add(new THREE.AmbientLight(0x9db4d0, 0.4));
+  const key = new THREE.DirectionalLight(0xdceeff, 0.8); key.position.set(8, 18, 6); scene.add(key);
+  glow = new THREE.PointLight(0x38bdf8, 1.1, 40); glow.position.set(0, 5, 0); scene.add(glow);
 
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d),
-  new THREE.MeshStandardMaterial({ color: 0x0d1620, roughness: 0.9 }));
-floor.rotation.x = -Math.PI / 2; scene.add(floor);
-const grid = new THREE.GridHelper(ROOM.w, ROOM.w, 0x1e3a52, 0x142433);
-grid.position.y = 0.01; scene.add(grid);
-// a plinth at the centre: the room has a middle, so people have somewhere to gather
-const plinth = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 0.4, 28),
-  new THREE.MeshStandardMaterial({ color: 0x14293a, roughness: 0.6 }));
-plinth.position.y = 0.2; scene.add(plinth);
-for (let i = 0; i < 4; i++) {
-  const c = new THREE.Mesh(new THREE.BoxGeometry(0.5, 4.2, 0.5),
-    new THREE.MeshStandardMaterial({ color: 0x16283a, roughness: 0.8 }));
-  c.position.set((i % 2 ? 1 : -1) * 8, 2.1, (i < 2 ? 1 : -1) * 8); scene.add(c);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d),
+    new THREE.MeshStandardMaterial({ color: 0x0d1620, roughness: 0.9 }));
+  floor.rotation.x = -Math.PI / 2; scene.add(floor);
+  const grid = new THREE.GridHelper(ROOM.w, ROOM.w, 0x1e3a52, 0x142433);
+  grid.position.y = 0.01; scene.add(grid);
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 0.4, 28),
+    new THREE.MeshStandardMaterial({ color: 0x14293a, roughness: 0.6 }));
+  plinth.position.y = 0.2; scene.add(plinth);
+  for (let i = 0; i < 4; i++) {
+    const column = new THREE.Mesh(new THREE.BoxGeometry(0.5, 4.2, 0.5),
+      new THREE.MeshStandardMaterial({ color: 0x16283a, roughness: 0.8 }));
+    column.position.set((i % 2 ? 1 : -1) * 8, 2.1, (i < 2 ? 1 : -1) * 8); scene.add(column);
+  }
+
+  bodies = new THREE.Group(); scene.add(bodies);
+  GEO = {
+    body: new THREE.CylinderGeometry(0.28, 0.34, 1.1, 14),
+    head: new THREE.SphereGeometry(0.22, 14, 12),
+    ring: new THREE.RingGeometry(0.42, 0.54, 22),
+  };
 }
-
-const bodies = new THREE.Group(); scene.add(bodies);
-const GEO = {
-  // r128 has no CapsuleGeometry, and `new THREE.CapsuleGeometry` as a feature test
-  // THROWS rather than returning falsy — which took the whole page down
-  body: new THREE.CylinderGeometry(0.28, 0.34, 1.1, 14),
-  head: new THREE.SphereGeometry(0.22, 14, 12),
-  ring: new THREE.RingGeometry(0.42, 0.54, 22),
-};
 
 function label(text, color) {
   const c = document.createElement('canvas'); c.width = 320; c.height = 88;
@@ -449,16 +614,20 @@ function placeCamera() {
   camera.lookAt(0, 1, 0);
 }
 let drag = null;
-renderer.domElement.addEventListener('pointerdown', e => drag = { x: e.clientX, y: e.clientY });
+if (renderer) renderer.domElement.addEventListener('pointerdown', e => drag = { x: e.clientX, y: e.clientY });
 addEventListener('pointerup', () => drag = null);
 addEventListener('pointermove', e => {
   if (!drag) return;
-  if (mode === 'me') { meAt.ry -= Math.round((e.clientX - drag.x) * 0.6); }
+  if (mode === 'me') { meAt.ry = normalizeRy(meAt.ry - Math.round((e.clientX - drag.x) * 0.6)); }
   else { theta -= (e.clientX - drag.x) * 0.006; phi = Math.max(0.25, Math.min(1.4, phi - (e.clientY - drag.y) * 0.005)); }
   drag = { x: e.clientX, y: e.clientY };
 });
-renderer.domElement.addEventListener('wheel', e => { e.preventDefault(); dist = Math.max(7, Math.min(34, dist + e.deltaY * 0.02)); }, { passive: false });
-$('cam').onclick = () => { mode = mode === 'room' ? 'me' : 'room'; $('cam').textContent = 'Camera: ' + mode; };
+if (renderer) renderer.domElement.addEventListener('wheel', e => { e.preventDefault(); dist = Math.max(7, Math.min(34, dist + e.deltaY * 0.02)); }, { passive: false });
+$('cam').onclick = () => {
+  if (!THREE_READY) return;
+  mode = mode === 'room' ? 'me' : 'room';
+  $('cam').textContent = 'Camera: ' + mode;
+};
 
 /* ── you ──────────────────────────────────────────────────────────────────── */
 // Your steps are frames too. They are appended at walking speed rather than per
@@ -468,7 +637,7 @@ addEventListener('keydown', e => { if (document.activeElement === $('msg')) retu
 addEventListener('keyup', e => held.delete(e.key.toLowerCase()));
 let lastStep = 0;
 async function walk() {
-  if (viewAt !== null || refused || !world || !world.peers['you']) return;
+  if (viewAt !== null || refused || mutationBlocked || !world || !world.peers['you']) return;
   const now = performance.now();
   if (now - lastStep < 260) return;
   let dx = 0, dz = 0;
@@ -479,11 +648,12 @@ async function walk() {
   const a = meAt.ry / 100;
   const nx = Math.round(meAt.x + (dx * Math.cos(a) - dz * Math.sin(a)) * 6);
   const nz = Math.round(meAt.z + (dx * Math.sin(a) + dz * Math.cos(a)) * 6);
-  const lim = ROOM.w * 5 - 6;
-  meAt.x = Math.max(-lim, Math.min(lim, nx));
-  meAt.z = Math.max(-lim, Math.min(lim, nz));
+  const beforeMe = { ...meAt };
+  meAt.x = Math.max(-POSITION_LIMIT, Math.min(POSITION_LIMIT, nx));
+  meAt.z = Math.max(-POSITION_LIMIT, Math.min(POSITION_LIMIT, nz));
   const before = world;
-  await append({ event: 'peer.moved', who: 'you', x: meAt.x, z: meAt.z, ry: Math.round(meAt.ry) });
+  const written = await append({ event: 'peer.moved', who: 'you', x: meAt.x, z: meAt.z, ry: normalizeRy(meAt.ry) });
+  if (!written) { meAt = beforeMe; return; }
   planLerp(before, world);
 }
 
@@ -492,6 +662,7 @@ async function walk() {
 // which is why an agent cannot put the room in a state you could not.
 function setLive(on) {
   if (live) { clearInterval(live); live = null; }
+  if (on && (refused || mutationBlocked)) { stat(refused || mutationBlocked, 'bad'); on = false; }
   if (on) live = setInterval(residentTick, 1300);
   $('live').textContent = live ? '■ Stop them' : '▶ Let them work';
   $('live').classList.toggle('hot', !!live);
@@ -508,9 +679,8 @@ async function residentTick() {
     await append({ event: 'peer.said', who: r.id, text: r.says[Math.floor(Math.random() * r.says.length)] });
     return;
   }
-  const lim = ROOM.w * 5 - 6;
-  const nx = Math.max(-lim, Math.min(lim, c.x + Math.round((Math.random() - 0.5) * 40)));
-  const nz = Math.max(-lim, Math.min(lim, c.z + Math.round((Math.random() - 0.5) * 40)));
+  const nx = Math.max(-POSITION_LIMIT, Math.min(POSITION_LIMIT, c.x + Math.round((Math.random() - 0.5) * 40)));
+  const nz = Math.max(-POSITION_LIMIT, Math.min(POSITION_LIMIT, c.z + Math.round((Math.random() - 0.5) * 40)));
   await append({ event: 'peer.moved', who: r.id, x: nx, z: nz, ry: Math.round(Math.atan2(nx - c.x, nz - c.z) * 100) });
   planLerp(before, world);
 }
@@ -521,28 +691,41 @@ function seekTo(i) {
   viewAt = Math.max(0, Math.min(frames.length - 1, i));
   if (viewAt === frames.length - 1) viewAt = null;
   paintMeta();
+  paintWho();
   $('scrub').value = String(viewAt === null ? frames.length - 1 : viewAt);
 }
-$('scrub').oninput = () => { stopPlay(); seekTo(Number($('scrub').value)); };
+$('scrub').oninput = () => {
+  if (!frames.length || refused) { stat(refused || 'there is no verified record to inspect', 'bad'); return; }
+  stopPlay(); seekTo(Number($('scrub').value));
+};
 function stopPlay() { if (playing) { clearInterval(playing); playing = null; $('replay').textContent = '⏮ Replay from frame 0'; } }
 $('replay').onclick = () => {
-  if (playing) { stopPlay(); viewAt = null; paintMeta(); return; }
-  viewAt = 0; $('replay').textContent = '■ Stop the replay';
+  if (!frames.length || refused) { stat(refused || 'there is no verified record to replay', 'bad'); return; }
+  if (playing) { stopPlay(); seekTo(frames.length - 1); return; }
+  seekTo(0); $('replay').textContent = '■ Stop the replay';
   playing = setInterval(() => {
-    if (viewAt === null || viewAt >= frames.length - 1) { stopPlay(); viewAt = null; paintMeta(); return; }
+    if (viewAt === null || viewAt >= frames.length - 1) { stopPlay(); seekTo(frames.length - 1); return; }
     const before = viewed();
     viewAt++;
     planLerp(before, viewed());
     paintMeta();
+    paintWho();
     $('scrub').value = String(viewAt);
   }, 420);
 };
 
 /* ── forking: any frame is a go-live point ────────────────────────────────── */
 $('fork').onclick = async () => {
+  if (recorder) { stat('stop the recording before forking this room', 'bad'); return; }
+  if (mutationBlocked) { stat(mutationBlocked, 'bad'); return; }
+  if (!storageAvailable) { stat('storage is unavailable — this room is read-only', 'bad'); return; }
+  if (refused || !frames.length) { stat(refused || 'there is no verified record to fork', 'bad'); return; }
+  await queue;
   const at = viewAt === null ? frames.length - 1 : viewAt;
   const w = project(frames.slice(0, at + 1));
   if (!confirm('Start a new room from frame ' + at + '?\n\nEverybody standing there comes with you, into a new stream that records where it came from.')) return;
+  const wasLive = !!live;
+  setLive(false);
   const parent = { stream_id: streamId, seq: frames[at].seq, frame_hash: frames[at].frame_hash };
   const stream = await mintStream();
   const evs = [{ event: 'room.opened', title: 'The Nexus · from frame ' + at, from: parent }];
@@ -556,12 +739,23 @@ $('fork').onclick = async () => {
     next.push(f); prev = f;
   }
   const problems = await verifyChain(next, stream);
-  if (problems.length) { stat('the fork does not verify — ' + problems[0], 'bad'); return; }
-  if (!save(LS.frames, next) || !save(LS.stream, stream)) { stat('could not write the new room', 'bad'); return; }
-  frames = next; streamId = stream; world = project(frames); viewAt = null; refused = null; stopPlay();
+  if (problems.length) { stat('the fork does not verify — ' + problems[0], 'bad'); if (wasLive) setLive(true); return; }
+  const replaced = await withRecordLock(async () => {
+    const stored = await inspectStoredRecord();
+    if (stored.state !== 'valid' || stored.raw !== currentRaw || stored.envelope.stream_id !== streamId || headOf(stored.envelope.frames) !== headOf(frames)) return { stale: true };
+    return writeEnvelope(stream, next);
+  });
+  if (!replaced.ok) {
+    if (replaced.stale) staleRecord();
+    else block('storage is unavailable — the fork was not saved and this room is read-only');
+    return;
+  }
+  adoptRecord(makeEnvelope(stream, next), replaced.raw);
+  stopPlay();
   $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
   paintMeta(); paintWho();
   stat('a new room, live from frame ' + at + ' of the one before it — ' + frames.length + ' frames, all verified', 'ok');
+  if (wasLive) setLive(true);
 };
 
 /* ── panels ───────────────────────────────────────────────────────────────── */
@@ -590,6 +784,13 @@ function paintMeta() {
                 ['head wave', head ? head.frame_hash : '—']];
   if (origin) rows.push(['forked at', 'frame ' + origin.seq + ' of ' + String(origin.stream_id).slice(0, 30) + '…']);
   $('meta').innerHTML = rows.map(([k, v]) => '<div>' + k + '</div><div>' + esc(v) + '</div>').join('');
+  if (!frames.length) {
+    $('hud').innerHTML = '<b>no verified room loaded</b>';
+    $('scrub').max = '0'; $('scrub').value = '0';
+    $('atframe').textContent = 'unavailable';
+    document.body.classList.remove('past');
+    return;
+  }
   const w = viewed();
   $('hud').innerHTML = '<b>' + (w ? w.order.length : 0) + ' in the room</b> · frame '
     + (viewAt === null ? frames.length - 1 : viewAt) + ' of ' + (frames.length - 1)
@@ -612,70 +813,180 @@ function paintWho() {
 
 /* ── saying something ─────────────────────────────────────────────────────── */
 async function say() {
-  const t = $('msg').value.trim();
+  const input = $('msg');
+  const t = input.value.trim();
   if (!t) return;
-  $('msg').value = '';
-  await append({ event: 'peer.said', who: 'you', text: t.slice(0, 140) });
+  const written = await append({ event: 'peer.said', who: 'you', text: t.slice(0, MAX_TEXT) });
+  if (written && input.value.trim() === t) input.value = '';
 }
 $('send').onclick = say;
 $('msg').addEventListener('keydown', e => { if (e.key === 'Enter') say(); });
 
 /* ── export / reset ───────────────────────────────────────────────────────── */
-$('export').onclick = () => {
-  const blob = new Blob([JSON.stringify({ stream_id: streamId, frames }, null, 2)], { type: 'application/json' });
+function downloadBlob(name, blob) {
   const u = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = u; a.download = 'nexus3d-room.json'; document.body.append(a); a.click(); a.remove();
+  const a = document.createElement('a');
+  a.href = u; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 1000);
+}
+$('export').onclick = () => {
+  if (refused || !frames.length) { stat(refused || 'there is no verified record to export', 'bad'); return; }
+  const blob = new Blob([JSON.stringify({ stream_id: streamId, frames }, null, 2)], { type: 'application/json' });
+  downloadBlob('nexus3d-room.json', blob);
   stat('the room handed to your browser as its chain', 'ok');
 };
+async function buildFrames(stream, payloads) {
+  const next = [];
+  let prev = null;
+  for (const [i, payload] of payloads.entries()) {
+    const atUtc = utcNow(prev ? prev.utc : null);
+    const objection = payloadObjection(payload, next, atUtc);
+    if (objection) throw new Error(objection);
+    const frame = await buildFrame(stream, i, payload, prev ? prev.payload_hash : null, atUtc);
+    next.push(frame); prev = frame;
+  }
+  const problems = await verifyChain(next, stream);
+  if (problems.length) throw new Error(problems[0]);
+  return next;
+}
 $('reset').onclick = async () => {
+  if (recorder) { stat('stop the recording before resetting this room', 'bad'); return; }
+  if (mutationBlocked) { stat(mutationBlocked, 'bad'); return; }
+  if (!storageAvailable) { stat('storage is unavailable — this room is read-only', 'bad'); return; }
   if (!confirm('Start a new room?\n\nThis discards the record in this browser. Export first if you want it.')) return;
-  setLive(false); stopPlay(); viewAt = null; refused = null;
-  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
-  frames = []; streamId = await mintStream(); $('wire').innerHTML = '';
-  await append({ event: 'room.opened', title: 'The Nexus' });
-  await append({ event: 'peer.joined', who: 'you', kind: 'person', x: 0, z: 60, ry: 0 });
-  meAt = { x: 0, z: 60, ry: 0 };
+  setLive(false); stopPlay(); await queue;
+  const stream = await mintStream();
+  const next = await buildFrames(stream, [
+    { event: 'room.opened', title: 'The Nexus' },
+    { event: 'peer.joined', who: 'you', kind: 'person', x: 0, z: 60, ry: 0 },
+  ]);
+  const replaced = await withRecordLock(async () => {
+    const read = readRaw(RECORD_KEY);
+    if (!read.ok) return { ok: false, error: read.error };
+    if (read.raw !== currentRaw) return { stale: true };
+    return writeEnvelope(stream, next);
+  });
+  if (!replaced.ok) {
+    if (replaced.stale) staleRecord();
+    else block('storage is unavailable — reset could not create a durable room');
+    return;
+  }
+  adoptRecord(makeEnvelope(stream, next), replaced.raw);
+  $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+  paintMeta(); paintWho();
   stat('a new room, minted from randomness', 'ok');
 };
 
 /* ── recording ────────────────────────────────────────────────────────────── */
-let recorder = null, chunks = [], recStart = 0;
-$('rec').onclick = () => {
-  if (recorder) { try { recorder.stop(); } catch (e) {} return; }
-  if (!window.MediaRecorder || !renderer.domElement.captureStream) { stat('this browser will not record a canvas', 'bad'); return; }
-  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+let recorder = null, chunks = [], recStart = 0, recordingState = null;
+function stopCapture(stream) {
+  if (!stream) return;
+  let tracks = [];
+  try { tracks = stream.getTracks(); } catch (e) { return; }
+  for (const track of tracks) {
+    try { track.stop(); } catch (e) {}
+  }
+}
+function resetRecorderUi() {
+  $('rec').textContent = '● Record';
+  $('rec').classList.remove('hot');
+}
+function failRecorderSetup(error, mediaStream, candidate) {
+  if (candidate) {
+    try {
+      candidate.ondataavailable = null;
+      candidate.onstop = null;
+      candidate.onerror = null;
+    } catch (e) {}
+    try { if (candidate.state && candidate.state !== 'inactive') candidate.stop(); } catch (e) {}
+  }
+  stopCapture(mediaStream);
+  recorder = null;
+  recordingState = null;
   chunks = [];
-  recorder = new MediaRecorder(renderer.domElement.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 6_000_000 } : {});
-  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-  recorder.onstop = async () => {
+  resetRecorderUi();
+  stat('recording could not start — ' + (error.message || String(error)), 'bad');
+}
+$('rec').onclick = () => {
+  if (mutationBlocked) { stat(mutationBlocked, 'bad'); return; }
+  if (recorder) {
+    if (recordingState && !recordingState.frames) recordingState.frames = structuredClone(frames);
+    try { recorder.stop(); } catch (e) {}
+    return;
+  }
+  if (!THREE_READY || !renderer || !window.MediaRecorder || !renderer.domElement.captureStream) {
+    stat('this browser will not record a canvas', 'bad'); return;
+  }
+  let mediaStream = null, candidate = null;
+  try {
+    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    chunks = [];
+    mediaStream = renderer.domElement.captureStream(30);
+    recordingState = {
+      stream_id: streamId,
+      start_seq: frames.length - 1,
+      start_frame_hash: headOf(frames),
+      mediaStream,
+    };
+    candidate = new MediaRecorder(mediaStream, type ? { mimeType: type, videoBitsPerSecond: 6_000_000 } : {});
+    recorder = candidate;
+    recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.onstop = async () => {
     const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
-    const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+    const finished = recorder;
+    const captured = recordingState;
+    const capturedFrames = captured && captured.frames ? captured.frames : structuredClone(frames);
+    const blob = new Blob(chunks, { type: finished.mimeType || 'video/webm' });
+    stopCapture(captured && captured.mediaStream);
     recorder = null; chunks = [];
+    recordingState = null;
     $('rec').textContent = '● Record'; $('rec').classList.remove('hot');
     if (!blob.size) { stat('the recorder produced nothing', 'bad'); return; }
+    if (!captured || captured.stream_id !== streamId) { stat('the room changed while recording — the capture was refused', 'bad'); return; }
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const name = 'nexus3d-' + stamp + '.webm';
-    for (const [n, b] of [[name, blob], [name.replace(/\.webm$/, '.frames.json'),
-        new Blob([JSON.stringify({ recording: name, seconds: secs, stream_id: streamId, frames }, null, 2)], { type: 'application/json' })]]) {
-      const u = URL.createObjectURL(b);
-      const a = document.createElement('a'); a.href = u; a.download = n; document.body.append(a); a.click(); a.remove();
-    }
-    const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-    const hex = [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
+    const webmBytes = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', webmBytes);
+    const hex = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, '0')).join('');
+    const sidecar = new Blob([JSON.stringify({
+      recording: name, seconds: secs, bytes: blob.size, sha256: hex, stream_id: captured.stream_id,
+      start_seq: captured.start_seq, start_frame_hash: captured.start_frame_hash,
+      end_seq: capturedFrames.length - 1, frames: capturedFrames,
+    }, null, 2)], { type: 'application/json' });
+    downloadBlob(name, blob);
+    downloadBlob(name.replace(/\.webm$/, '.frames.json'), sidecar);
     stat('saved ' + name + ' (' + secs + 's) with the chain that produced it · sha256 ' + hex.slice(0, 20) + '…', 'ok');
-  };
-  recorder.start(1000); recStart = Date.now();
-  $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
+    };
+    recorder.onerror = () => {
+      stopCapture(recordingState && recordingState.mediaStream);
+      recorder = null; recordingState = null; chunks = [];
+      resetRecorderUi();
+      stat('the recorder failed', 'bad');
+    };
+    recStart = Date.now();
+    recorder.start(1000);
+    $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
+  } catch (error) {
+    failRecorderSetup(error, mediaStream, candidate);
+  }
 };
 $('live').onclick = () => setLive(!live);
+addEventListener('pagehide', () => {
+  setLive(false); stopPlay();
+  if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (e) {} }
+  stopCapture(recordingState && recordingState.mediaStream);
+});
 
 /* ── loop ─────────────────────────────────────────────────────────────────── */
 function resize() {
+  if (!renderer) return;
   const w = $('view').clientWidth, h = $('view').clientHeight;
   renderer.setSize(w, h, false); camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize);
 function tick() {
+  if (!renderer) return;
   requestAnimationFrame(tick);
   walk();
   const w = viewed();
@@ -685,33 +996,140 @@ function tick() {
   renderer.render(scene, camera);
 }
 
+async function inspectLegacyRecord() {
+  const legacyFrames = readRaw(LEGACY.frames);
+  const legacyStream = readRaw(LEGACY.stream);
+  if (!legacyFrames.ok || !legacyStream.ok) return { state: 'unavailable', error: legacyFrames.error || legacyStream.error };
+  if (!legacyFrames.exists && !legacyStream.exists) return { state: 'missing' };
+  const preserved = JSON.stringify({ frames: legacyFrames.raw, stream: legacyStream.raw });
+  if (!legacyFrames.exists || !legacyStream.exists) return { state: 'malformed', raw: preserved, error: 'legacy record is incomplete', source: 'legacy' };
+  const parsedFrames = parseRaw(legacyFrames.raw), parsedStream = parseRaw(legacyStream.raw);
+  if (!parsedFrames.ok || !parsedStream.ok) {
+    return { state: 'malformed', raw: preserved, error: 'legacy record JSON is malformed', source: 'legacy' };
+  }
+  if (!Array.isArray(parsedFrames.value) || typeof parsedStream.value !== 'string') {
+    return { state: 'malformed', raw: preserved, error: 'legacy record has the wrong shape', source: 'legacy' };
+  }
+  const problems = await verifyChain(parsedFrames.value, parsedStream.value);
+  if (problems.length) return { state: 'corrupt', raw: preserved, error: problems[0], problems, source: 'legacy' };
+  return { state: 'valid', envelope: makeEnvelope(parsedStream.value, parsedFrames.value, []), source: 'legacy' };
+}
+async function initialEnvelope(quarantine = [], residents = true) {
+  const stream = await mintStream();
+  const payloads = [
+    { event: 'room.opened', title: 'The Nexus' },
+    { event: 'peer.joined', who: 'you', kind: 'person', x: 0, z: 60, ry: 0 },
+  ];
+  if (residents) for (const r of RESIDENTS) {
+    payloads.push({ event: 'peer.joined', who: r.id, kind: 'agent',
+      x: Math.round((Math.random() - 0.5) * 120), z: Math.round((Math.random() - 0.5) * 120), ry: 0 });
+  }
+  return makeEnvelope(stream, await buildFrames(stream, payloads), quarantine);
+}
+async function loadOrCreateRecord() {
+  const active = await inspectStoredRecord();
+  if (active.state === 'valid') return active;
+  if (active.state === 'unavailable') return active;
+  if (active.state === 'malformed' || active.state === 'corrupt') {
+    const inherited = active.envelope && Array.isArray(active.envelope.quarantine) ? active.envelope.quarantine : [];
+    return { ...active, quarantine: [...inherited, quarantineEntry(RECORD_KEY, active.raw, active.error)] };
+  }
+
+  const legacy = await inspectLegacyRecord();
+  if (legacy.state === 'unavailable') return legacy;
+  if (legacy.state === 'malformed' || legacy.state === 'corrupt') {
+    return { ...legacy, quarantine: [quarantineEntry(legacy.source || 'legacy', legacy.raw, legacy.error)] };
+  }
+  if (legacy.state === 'valid') {
+    const wrote = writeEnvelope(legacy.envelope.stream_id, legacy.envelope.frames, legacy.envelope.quarantine);
+    if (!wrote.ok) return { state: 'unavailable', error: wrote.error };
+    try {
+      localStorage.removeItem(LEGACY.frames);
+      localStorage.removeItem(LEGACY.stream);
+      localStorage.removeItem(LEGACY.head);
+    } catch (e) {}
+    return { state: 'valid', envelope: legacy.envelope, raw: wrote.raw, migrated: true };
+  }
+
+  const envelope = await initialEnvelope();
+  const wrote = writeEnvelope(envelope.stream_id, envelope.frames, envelope.quarantine);
+  if (!wrote.ok) return { state: 'unavailable', error: wrote.error };
+  return { state: 'valid', envelope, raw: wrote.raw, created: true };
+}
+async function loadReadOnlyRecord() {
+  const active = await inspectStoredRecord();
+  if (active.state !== 'missing') return active;
+  const legacy = await inspectLegacyRecord();
+  if (legacy.state === 'valid') return { ...legacy, raw: null };
+  return legacy;
+}
+addEventListener('storage', e => {
+  if (e.storageArea !== localStorage || e.key !== RECORD_KEY || e.newValue === currentRaw) return;
+  staleRecord('another tab changed this room — reload before acting here');
+});
+
 /* ── boot ─────────────────────────────────────────────────────────────────── */
-(async function boot() {
-  const disk = load(LS.frames), ds = load(LS.stream);
-  if (Array.isArray(disk) && disk.length && typeof ds === 'string') {
-    const problems = await verifyChain(disk, ds);
-    if (problems.length) {
-      refused = 'this record does not verify — ' + problems[0] + '. Nothing will be written until you Reset.';
-      frames = disk; streamId = ds; stat(refused, 'bad');
-    } else { frames = disk; streamId = ds; }
-  }
-  if (!frames.length) {
-    streamId = await mintStream();
-    await append({ event: 'room.opened', title: 'The Nexus' });
-    await append({ event: 'peer.joined', who: 'you', kind: 'person', x: 0, z: 60, ry: 0 });
-    for (const r of RESIDENTS) {
-      await append({ event: 'peer.joined', who: r.id, kind: 'agent',
-                     x: Math.round((Math.random() - 0.5) * 120), z: Math.round((Math.random() - 0.5) * 120), ry: 0 });
-    }
-  } else {
-    world = project(frames);
-    const me = world.peers['you'];
-    if (me) meAt = { x: me.x, z: me.z, ry: me.ry || 0 };
+async function boot() {
+  const loaded = WEB_LOCKS_AVAILABLE
+    ? await withRecordLock(loadOrCreateRecord)
+    : await loadReadOnlyRecord();
+  if (loaded.state === 'valid') {
+    adoptRecord(loaded.envelope, loaded.raw);
     $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+  } else {
+    frames = []; streamId = null; world = project([]);
+    currentRaw = loaded.raw || null;
+    currentQuarantine = loaded.quarantine || [];
+    storageAvailable = loaded.state !== 'unavailable';
+    refused = loaded.state === 'unavailable'
+      ? 'storage is unavailable — no durable room was created; controls are read-only'
+      : 'the stored record is ' + loaded.state + ' — ' + loaded.error + '. Its original bytes are preserved; Reset can quarantine them and create a new room.';
+    stat(refused, 'bad');
   }
-  world = project(frames);
   paintMeta(); paintWho();
   resize(); tick();
-  if (!refused) stat(frames.length + ' frames, all verified — walk with WASD, or let them work', 'ok');
-})();
+  if (!WEB_LOCKS_AVAILABLE) {
+    const detail = frames.length
+      ? frames.length + ' verified frames may be viewed, replayed, and exported'
+      : 'no verified room is available';
+    enterLockReadOnly('Web Locks are unavailable — read-only mode; ' + detail + '. Mutations are disabled.');
+  } else if (!refused) {
+    stat(frames.length + ' frames, all verified — walk with WASD, or let them work', 'ok');
+  }
+  window.__nexusReady = true;
+}
+function showThreeFallback() {
+  const message = '3D engine unavailable — storage was not read or changed';
+  frames = []; streamId = null; world = project([]);
+  storageAvailable = false; refused = message;
+  for (const id of ['live', 'replay', 'fork', 'cam', 'rec', 'export', 'reset', 'msg', 'send', 'scrub']) {
+    $(id).disabled = true;
+  }
+  const notice = document.createElement('div');
+  notice.setAttribute('role', 'alert');
+  notice.style.cssText = 'padding:24px;color:var(--bad);font:13px/1.6 var(--mono)';
+  notice.textContent = message;
+  $('view').prepend(notice);
+  $('hud').textContent = '';
+  $('keys').textContent = '';
+  $('meta').innerHTML = '<div>spec</div><div>' + SPEC + '</div><div>stream</div><div>unavailable</div><div>frames</div><div>0</div>';
+  $('who').innerHTML = '';
+  $('scrub').max = '0'; $('scrub').value = '0';
+  $('atframe').textContent = 'unavailable';
+  stat(message, 'bad');
+  window.__nexusFallback = 'three-unavailable';
+  window.__nexusReady = true;
+}
+if (THREE_READY) {
+  boot().catch(error => {
+    frames = []; streamId = null; world = project([]);
+    storageAvailable = false;
+    refused = 'the room could not start — ' + (error.message || String(error));
+    paintMeta(); paintWho(); resize(); tick(); stat(refused, 'bad');
+    window.__nexusReady = true;
+    console.error(error);
+  });
+} else {
+  showThreeFallback();
+}
 </script>

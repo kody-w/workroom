@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DOGG Heist in Three Dimensions</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three-r128.min.js"></script>
 <style>
   :root{
     --bg:#07090c; --panel:#0d1117; --line:#1c242e; --ink:#e8eef5; --dim:#78889b;
@@ -12,9 +12,13 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
-  header{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--line);
-         background:var(--panel);flex-wrap:wrap}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden;
+       display:flex;flex-direction:column}
+  header{padding:8px 13px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+  .topline{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .controls{display:flex;align-items:center;gap:7px;overflow-x:auto;overscroll-behavior-x:contain;
+            scrollbar-width:thin;padding-bottom:1px}
+  .controls>*{flex:0 0 auto}
   h1{font-size:13.5px;margin:0;font-weight:600;letter-spacing:.2px}
   h1 span{color:var(--dim);font-weight:400}
   .grow{flex:1}
@@ -23,7 +27,7 @@
   button:hover{border-color:#2a3644}
   button.go{background:var(--core);border-color:var(--core);color:#04120b;font-weight:600}
   button.hot{background:#ef4444;border-color:#ef4444;color:#1a0505;font-weight:600}
-  main{display:flex;height:calc(100% - 47px)}
+  main{display:flex;flex:1;min-height:0}
   #view{flex:1;min-width:0;position:relative}
   canvas{display:block;width:100%;height:100%}
   #hud{position:absolute;left:14px;top:12px;font:11.5px/1.7 var(--mono);pointer-events:none;
@@ -51,22 +55,42 @@
   .ag span{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .stat{padding:7px 13px;border-top:1px solid var(--line);font:10.5px/1.5 var(--mono);color:var(--dim);min-height:30px}
   .stat.ok{color:var(--core)} .stat.bad{color:#ef4444}
-  #flat{position:absolute;right:0;bottom:0;width:520px;height:420px;border:1px solid var(--line);
+  #flat{position:absolute;right:10px;bottom:10px;width:min(680px,calc(100% - 20px));height:min(520px,calc(100% - 20px));border:1px solid var(--line);
         border-radius:10px 0 0 0;overflow:hidden;background:#000;display:none}
   #flat.on{display:block}
-  #flat iframe{width:1100px;height:900px;border:0;transform:scale(.47);transform-origin:0 0}
-  #hidden{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px}
+  #flat iframe{width:100%;height:100%;border:0}
+  .timeline-control{display:flex;align-items:center;gap:5px;color:var(--dim);font:11px var(--mono)}
+  .timeline-control input{width:150px;accent-color:var(--core)}
+  .three-failure{height:100%;display:grid;place-items:center;padding:24px;text-align:center;color:#fca5a5}
+  @media (max-width:700px){
+    header{padding:7px 9px}
+    .topline{margin-bottom:5px}
+    main{flex-direction:column;overflow:auto}
+    #view{flex:0 0 54vh;min-height:290px;width:100%}
+    aside{width:100%;flex:0 0 360px;border-left:0;border-top:1px solid var(--line)}
+    #flat{inset:6px;width:auto;height:auto;border-radius:8px}
+    .timeline-control input{width:120px}
+  }
 </style>
 
 <header>
-  <h1>DOGG Heist <span>· three dimensions, driven by the frames</span></h1>
-  <button id="play" class="go">▶ Play</button>
-  <button id="step">Step</button>
-  <button id="restart">Restart</button>
-  <button id="cam">Camera: orbit</button>
-  <button id="flatbtn">Show the flat board</button>
-  <div class="grow"></div>
-  <button id="rec">● Record</button>
+  <div class="topline"><h1>DOGG Heist <span>· three dimensions, driven by verified frames</span></h1></div>
+  <div class="controls" aria-label="Heist controls">
+    <button id="play" class="go" aria-pressed="false">▶ Play</button>
+    <button id="step">Step</button>
+    <button id="newseed">New seed</button>
+    <button id="replay">Replay seed</button>
+    <button id="live" disabled>Return live</button>
+    <button id="fork" disabled>Fork here</button>
+    <label class="timeline-control" for="timeline">Frame
+      <input id="timeline" type="range" min="0" max="0" step="1" value="0" aria-valuetext="Frame 1 of 1">
+    </label>
+    <button id="export">Export</button>
+    <button id="cam">Camera: orbit</button>
+    <button id="flatbtn" aria-pressed="false">Show game controls</button>
+    <div class="grow"></div>
+    <button id="rec" aria-pressed="false">● Record canvas</button>
+  </div>
 </header>
 
 <main>
@@ -74,7 +98,7 @@
     <div id="hud"></div>
     <div id="alarmbar"><div id="alarmfill"></div></div>
     <div id="outcome"></div>
-    <div id="flat"><iframe id="flatframe"></iframe></div>
+    <div id="flat"><iframe id="g" src="dogg-heist.html" title="DOGG Heist authority controls"></iframe></div>
   </div>
   <aside>
     <div class="band"><h2>The chain</h2><div class="kv" id="meta"></div></div>
@@ -83,59 +107,115 @@
     <div class="stat" id="stat">…</div>
   </aside>
 </main>
-<div id="hidden"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const GAME = 'dogg-heist.html';
-const KEY = 'dogg-heist-save-v1';
 const COLOR = { ghost:0x67e8f9, cipher:0xa78bfa, atlas:0xfbbf24, spark:0xfb7185 };
 const stat = (m, c) => { const e = $('stat'); e.textContent = m; e.className = 'stat ' + (c || ''); };
+const host = $('g');
+
+if (!window.THREE) {
+  const failure = document.createElement('div');
+  failure.className = 'three-failure';
+  failure.setAttribute('role', 'alert');
+  failure.textContent = 'The 3D renderer could not load. The verified game authority remains available below.';
+  $('view').prepend(failure);
+  $('flat').classList.add('on');
+  $('flatbtn').textContent = '3D unavailable';
+  $('flatbtn').setAttribute('aria-pressed', 'true');
+  document.querySelectorAll('.controls button:not(#flatbtn)').forEach((button) => { button.disabled = true; });
+  stat('Three.js unavailable — showing the game authority directly', 'bad');
+} else {
 
 /* ── the game runs for real; this page only reads what it seals ──────────────
-   Nothing here reimplements the heist. The game is the authority: it seals a frame
-   every tick, each carrying a full state snapshot and a hash over its own contents,
-   and persists the chain. This page reads that chain and draws the newest frame in
-   three dimensions. If the two ever disagree it is because the frame said so — there
-   is no second copy of the rules to drift. */
-const host = document.createElement('iframe');
-host.id = 'g'; host.src = GAME; $('hidden').append(host);
-$('flatframe').src = GAME + '#mirror';
+   One embedded game is the sole authority. It validates every candidate export,
+   owns all state transitions, and is also the optional flat control surface. */
 
-let chain = [], head = null, prevState = null, lastRaw = '';
+let chain = [], head = null, prevState = null, selectedIndex = 0;
+let lastRaw = '', lastRejectedRaw = '';
+let lastReadAt = 0;
+let recordingActive = false;
 let anim = new Map();          // id -> {from:{x,y}, to:{x,y}, t0}
 const STEP_MS = 420;
 
-function readChain() {
-  let raw;
-  try { raw = localStorage.getItem(KEY); } catch (e) { return; }
-  if (!raw || raw === lastRaw) return;
-  lastRaw = raw;
-  let payload;
-  try { payload = JSON.parse(raw); } catch (e) { stat('the saved chain is not JSON', 'bad'); return; }
-  const d = payload && payload.data;
-  const frames = d && (d.frames || d.chain);
-  if (!Array.isArray(frames) || !frames.length) return;
-  // linkage is the game's own claim, and it is cheap to hold it to it
-  let broke = null;
-  for (let i = 1; i < frames.length; i++) {
-    if (frames[i].parentHash !== frames[i - 1].hash) { broke = i; break; }
-  }
-  chain = frames;
-  const next = frames[frames.length - 1];
-  if (head && next.hash === head.hash) return;
-  prevState = head ? head.state : null;
-  head = next;
-  onFrame(broke);
+function G() { try { return host.contentDocument; } catch (e) { return null; } }
+function gameApi() { try { return host.contentWindow && host.contentWindow.__doggHeist; } catch (e) { return null; } }
+function press(id) {
+  const d = G();
+  const button = d && d.getElementById(id);
+  if (!button) return false;
+  button.click();
+  return true;
 }
 
-function onFrame(broke) {
-  const s = head.state;
-  planMotion(prevState, s);
-  paintMeta(broke);
-  paintAgents(s);
+function readChain(force = false) {
+  const now = performance.now();
+  if (!force && now - lastReadAt < 50) return false;
+  lastReadAt = now;
+  const api = gameApi();
+  if (!api || typeof api.exportState !== 'function') return false;
+  let raw;
+  try {
+    raw = api.exportState();
+  } catch (error) {
+    stat('saved chain rejected: ' + error.message, 'bad');
+    return false;
+  }
+  return ingestCandidate(raw);
+}
+
+function ingestCandidate(raw) {
+  if (!raw || raw === lastRaw || raw === lastRejectedRaw) return false;
+  const api = gameApi();
+  if (!api || typeof api.validateExport !== 'function') {
+    stat('saved chain rejected: the game verifier is unavailable', 'bad');
+    return false;
+  }
+  try {
+    const data = api.validateExport(raw);
+    const authorityRaw = api.exportState();
+    if (raw !== authorityRaw) {
+      throw new Error('candidate is not the authority\'s current verified export');
+    }
+    const index = Math.max(0, Math.min(data.frames.length - 1, data.viewIndex));
+    const next = data.frames[index];
+    const prepared = prepareProjection(data.frames, index, next);
+    commitProjection(prepared);
+    lastRaw = raw;
+    lastRejectedRaw = '';
+    return true;
+  } catch (error) {
+    lastRejectedRaw = raw;
+    stat('saved chain rejected: ' + error.message, 'bad');
+    return false;
+  }
+}
+
+function prepareProjection(frames, index, next) {
+  const state = next.state;
+  const signature = staticSignature(state);
+  return {
+    frames,
+    index,
+    next,
+    state,
+    signature,
+    staticWorld: signature === built ? null : createStaticWorld(state)
+  };
+}
+
+function commitProjection(prepared) {
+  const previous = head;
+  prevState = previous ? previous.state : null;
+  chain = prepared.frames;
+  selectedIndex = prepared.index;
+  head = prepared.next;
+  planMotion(prevState, prepared.state);
+  if (prepared.staticWorld) replaceStaticWorld(prepared.staticWorld, prepared.signature);
+  paintMeta();
+  paintAgents(prepared.state);
   paintEvents();
-  build(s);
+  syncMovers(prepared.state);
 }
 
 /* ── the world ─────────────────────────────────────────────────────────────── */
@@ -151,8 +231,9 @@ scene.add(new THREE.AmbientLight(0x9fb6cc, 0.36));
 const key = new THREE.DirectionalLight(0xdff0ff, 0.85); key.position.set(9, 16, 7); scene.add(key);
 const alarmLight = new THREE.PointLight(0xef4444, 0, 40); alarmLight.position.set(9, 8, 6); scene.add(alarmLight);
 
-const world = new THREE.Group(); scene.add(world);
+let world = new THREE.Group(); scene.add(world);
 const movers = new THREE.Group(); scene.add(movers);
+const moverMeshes = new Map();
 let built = null;               // the tile signature the static geometry was built from
 
 const GEO = {
@@ -174,84 +255,122 @@ const MAT = {
   core: mat(0x4ade80, { emissive: 0x16a34a, emissiveIntensity: 0.9 }),
   guard: mat(0xef4444), stunned: mat(0x6b7280),
   cam: mat(0xf59e0b), haz: mat(0xf97316, { emissive: 0x7c2d12, emissiveIntensity: 0.5 }),
+  agents: Object.fromEntries(Object.entries(COLOR).map(([id, color]) =>
+    [id, mat(color, { emissive: color, emissiveIntensity: 0.28 })])),
 };
 
 const P = (x, y) => ({ x: x - 8.5, z: y - 5.5 });     // grid -> world, centred
 
 function clear(g) {
   while (g.children.length) {
-    const c = g.children.pop();
-    if (c.geometry && !Object.values(GEO).includes(c.geometry)) c.geometry.dispose();
+    const c = g.children[g.children.length - 1];
     g.remove(c);
+    if (c.userData.ownsGeometry) c.geometry?.dispose();
+    if (c.userData.ownsMaterial) {
+      const materials = Array.isArray(c.material) ? c.material : [c.material];
+      materials.forEach((material) => material?.dispose());
+    }
   }
 }
 
 // the grid lives at state.facility.tiles; the rest of the furniture is top-level
 const tilesOf = (s) => (s && s.facility && Array.isArray(s.facility.tiles)) ? s.facility.tiles : null;
+const staticSignature = (s) => JSON.stringify(tilesOf(s)) + '|'
+  + JSON.stringify((s.doors || []).map(d => d.open + ':' + d.locked)) + '|'
+  + JSON.stringify((s.terminals || []).map(t => t.hacked + ':' + t.progress));
 
 function build(s) {
   if (!tilesOf(s)) { stat('that frame carries no facility — nothing to draw', 'bad'); return; }
-  const sig = JSON.stringify(tilesOf(s)) + '|' + JSON.stringify((s.doors || []).map(d => d.open + ':' + d.locked))
-            + '|' + JSON.stringify((s.terminals || []).map(t => t.hacked + ':' + t.progress));
-  if (sig !== built) { built = sig; buildStatic(s); }
-  buildMovers(s);
+  const sig = staticSignature(s);
+  if (sig !== built) replaceStaticWorld(createStaticWorld(s), sig);
+  syncMovers(s);
 }
 
-function buildStatic(s) {
-  clear(world);
+function createStaticWorld(s) {
+  const group = new THREE.Group();
   const tiles = tilesOf(s);
   for (let y = 0; y < tiles.length; y++) {
     for (let x = 0; x < tiles[y].length; x++) {
       const p = P(x, y);
       if (tiles[y][x] === 'W') {
         const m = new THREE.Mesh(GEO.wall, MAT.wall);
-        m.position.set(p.x, 0.45, p.z); world.add(m);
+        m.userData = { kind: 'tile', tile: 'W', gridX: x, gridY: y };
+        m.position.set(p.x, 0.45, p.z); group.add(m);
       } else {
         const m = new THREE.Mesh(GEO.floor, (x + y) % 2 ? MAT.floor : MAT.floorAlt);
-        m.position.set(p.x, 0, p.z); world.add(m);
+        m.userData = { kind: 'tile', tile: 'F', gridX: x, gridY: y };
+        m.position.set(p.x, 0, p.z); group.add(m);
       }
     }
   }
   for (const d of s.doors || []) {
     const p = P(d.x, d.y);
     const m = new THREE.Mesh(GEO.door, d.open ? MAT.doorOpen : (d.locked ? MAT.doorLocked : MAT.door));
+    m.userData = { kind: 'door', entityId: d.id };
     m.position.set(p.x, d.open ? 0.12 : 0.6, p.z);
     m.scale.y = d.open ? 0.16 : 1;
-    world.add(m);
+    group.add(m);
   }
   for (const t of s.terminals || []) {
     const p = P(t.x, t.y);
     const m = new THREE.Mesh(GEO.term, t.hacked ? MAT.termOn : MAT.term);
+    m.userData = { kind: 'terminal', entityId: t.id };
     m.position.set(p.x, 0.36, p.z);
     m.scale.y = 1 + 0.5 * (t.progress / Math.max(1, t.required));
-    world.add(m);
+    group.add(m);
   }
   for (const h of s.hazards || []) {
     const p = P(h.x, h.y);
     const m = new THREE.Mesh(GEO.haz, MAT.haz);
-    m.position.set(p.x, 0.1, p.z); m.rotation.x = Math.PI / 2; world.add(m);
+    m.userData = { kind: 'hazard', entityId: h.id };
+    m.position.set(p.x, 0.1, p.z); m.rotation.x = Math.PI / 2; group.add(m);
   }
   if (s.extraction) {
     const p = P(s.extraction.x, s.extraction.y);
     const m = new THREE.Mesh(new THREE.RingGeometry(0.32, 0.46, 20),
                              new THREE.MeshBasicMaterial({ color: 0x4ade80, side: THREE.DoubleSide }));
-    m.position.set(p.x, 0.08, p.z); m.rotation.x = -Math.PI / 2; world.add(m);
+    m.userData = { kind: 'extraction', ownsGeometry: true, ownsMaterial: true };
+    m.position.set(p.x, 0.08, p.z); m.rotation.x = -Math.PI / 2; group.add(m);
   }
   for (const c of s.cameras || []) {
     const p = P(c.x, c.y);
     const m = new THREE.Mesh(GEO.cam, MAT.cam);
+    m.userData = { kind: 'camera', entityId: c.id };
     m.position.set(p.x, 1.55, p.z);
     m.rotation.z = Math.PI;                       // point down-ish
     m.rotation.y = (c.dir || 0) * Math.PI / 2;
-    world.add(m);
+    group.add(m);
   }
+  group.userData.tileCount = tiles.reduce((count, row) => count + row.length, 0);
+  return group;
 }
 
-// Anything that moves is rebuilt each frame and lerped between the last two states,
-// so a tick reads as motion rather than a jump cut.
-function buildMovers(s) {
-  clear(movers);
+function replaceStaticWorld(nextWorld, signature) {
+  const previousWorld = world;
+  scene.remove(previousWorld);
+  world = nextWorld;
+  scene.add(world);
+  built = signature;
+  clear(previousWorld);
+}
+
+function mover(key, geometry, material, metadata) {
+  let mesh = moverMeshes.get(key);
+  if (!mesh) {
+    mesh = new THREE.Mesh(geometry, material);
+    mesh.userData = { ...metadata, moverKey: key };
+    moverMeshes.set(key, mesh);
+    movers.add(mesh);
+  }
+  mesh.visible = true;
+  mesh.material = material;
+  return mesh;
+}
+
+// Movers are retained and repositioned, rather than recreated every animation frame.
+function syncMovers(s) {
   const now = performance.now();
+  const active = new Set();
   const at = (id, gx, gy) => {
     const a = anim.get(id);
     if (!a) return P(gx, gy);
@@ -262,31 +381,51 @@ function buildMovers(s) {
   for (const g of s.guards || []) {
     if (g.active === false) continue;
     const p = at('guard:' + g.id, g.x, g.y);
-    const body = new THREE.Mesh(GEO.body, g.stunned > 0 ? MAT.stunned : MAT.guard);
-    body.position.set(p.x, 0.5, p.z); movers.add(body);
-    const hd = new THREE.Mesh(GEO.head, g.stunned > 0 ? MAT.stunned : MAT.guard);
-    hd.position.set(p.x, 1.1, p.z); movers.add(hd);
+    const material = g.stunned > 0 ? MAT.stunned : MAT.guard;
+    const bodyKey = 'guard:' + g.id + ':body';
+    const headKey = 'guard:' + g.id + ':head';
+    active.add(bodyKey); active.add(headKey);
+    const body = mover(bodyKey, GEO.body, material, { kind: 'guard', entityId: g.id, part: 'body' });
+    body.position.set(p.x, 0.5, p.z);
+    const hd = mover(headKey, GEO.head, material, { kind: 'guard', entityId: g.id, part: 'head' });
+    hd.position.set(p.x, 1.1, p.z);
+    const ringKey = 'guard:' + g.id + ':alert';
     if (g.alert > 0) {
-      const ring = new THREE.Mesh(GEO.haz, MAT.guard);
-      ring.position.set(p.x, 1.5, p.z); ring.rotation.x = Math.PI / 2; movers.add(ring);
+      active.add(ringKey);
+      const ring = mover(ringKey, GEO.haz, MAT.guard, { kind: 'guard-alert', entityId: g.id });
+      ring.position.set(p.x, 1.5, p.z); ring.rotation.x = Math.PI / 2;
     }
   }
   for (const a of s.agents || []) {
     if (a.status === 'down' || a.status === 'extracted') continue;
     const p = at('agent:' + a.id, a.x, a.y);
-    const m = mat(COLOR[a.id] || 0xffffff, { emissive: COLOR[a.id] || 0xffffff, emissiveIntensity: 0.28 });
-    const body = new THREE.Mesh(GEO.body, m); body.position.set(p.x, 0.5, p.z); movers.add(body);
-    const hd = new THREE.Mesh(GEO.head, m); hd.position.set(p.x, 1.1, p.z); movers.add(hd);
+    const material = MAT.agents[a.id];
+    const bodyKey = 'agent:' + a.id + ':body';
+    const headKey = 'agent:' + a.id + ':head';
+    active.add(bodyKey); active.add(headKey);
+    const body = mover(bodyKey, GEO.body, material, { kind: 'agent', entityId: a.id, part: 'body' });
+    body.position.set(p.x, 0.5, p.z);
+    const hd = mover(headKey, GEO.head, material, { kind: 'agent', entityId: a.id, part: 'head' });
+    hd.position.set(p.x, 1.1, p.z);
+    const coreKey = 'agent:' + a.id + ':core';
     if (a.carryingCore) {
-      const c = new THREE.Mesh(GEO.core, MAT.core);
-      c.position.set(p.x, 1.62, p.z); c.userData.spin = true; movers.add(c);
+      active.add(coreKey);
+      const c = mover(coreKey, GEO.core, MAT.core, { kind: 'carried-core', entityId: a.id, spin: true });
+      c.position.set(p.x, 1.62, p.z);
     }
   }
   const core = s.core;
+  const coreKey = 'core';
   if (core && !core.acquired) {
+    active.add(coreKey);
     const p = P(core.x, core.y);
-    const c = new THREE.Mesh(GEO.core, MAT.core);
-    c.position.set(p.x, 0.55, p.z); c.userData.spin = true; movers.add(c);
+    const c = mover(coreKey, GEO.core, MAT.core, { kind: 'core', entityId: 'core', spin: true });
+    c.position.set(p.x, 0.55, p.z);
+  }
+  for (const [key, mesh] of moverMeshes) {
+    if (active.has(key)) continue;
+    movers.remove(mesh);
+    moverMeshes.delete(key);
   }
   alarmLight.intensity = Math.min(1.6, (s.alarm || 0) / 60);
   scene.fog.color.setHex((s.alarm || 0) > 60 ? 0x1a0808 : 0x07090c);
@@ -350,31 +489,33 @@ addEventListener('resize', resize);
 function tick() {
   requestAnimationFrame(tick);
   readChain();
-  if (head) buildMovers(head.state);
+  syncAuthorityControls(performance.now());
+  if (head) syncMovers(head.state);
   for (const c of movers.children) if (c.userData.spin) c.rotation.y += 0.03;
   placeCamera();
   renderer.render(scene, camera);
 }
 
 /* ── the panels ────────────────────────────────────────────────────────────── */
-function paintMeta(broke) {
+function paintMeta() {
   const s = head.state;
+  const historical = selectedIndex !== chain.length - 1;
   $('meta').innerHTML = [
     ['schema', head.schema],
     ['tick', s.tick + ' / ' + s.maxTicks],
     ['branch', s.branchId],
     ['frames', String(chain.length)],
     ['head', head.hash.slice(0, 22) + '…'],
-    ['linkage', broke === null ? 'every frame links to the one before it' : 'BREAKS at frame ' + broke],
+    ['projection', historical ? 'verified history frame ' + selectedIndex : 'verified live head'],
   ].map(([k, v]) => '<div>' + k + '</div><div>' + esc(v) + '</div>').join('');
   $('hud').innerHTML = '<b>tick ' + s.tick + '</b> · alarm ' + Math.round(s.alarm)
     + ' · terminals ' + (s.terminals || []).filter(t => t.hacked).length + '/' + s.requiredTerminals
-    + '<br>' + esc(s.branchId) + ' · frame ' + (chain.length - 1) + ' · ' + head.hash.slice(0, 12);
+    + '<br>' + esc(s.branchId) + ' · frame ' + selectedIndex + ' · ' + head.hash.slice(0, 12);
   $('alarmfill').style.width = Math.min(100, s.alarm) + '%';
   const done = s.outcome && s.outcome !== 'active';
   $('outcome').style.display = done ? 'flex' : 'none';
-  if (done) $('outcome').textContent = s.outcome === 'success' ? 'EXTRACTED' : String(s.outcome).toUpperCase();
-  if (broke !== null) stat('the chain does not link at frame ' + broke + ' — this is not one record', 'bad');
+  if (done) $('outcome').textContent = s.outcome === 'won' ? 'EXTRACTED' : String(s.outcome).toUpperCase();
+  stat(historical ? 'verified historical frame — fork or return live to continue' : 'verified live frame', 'ok');
 }
 
 function paintAgents(s) {
@@ -384,20 +525,22 @@ function paintAgents(s) {
   ).join('');
 }
 
-let paintedUpTo = null;
 function paintEvents() {
-  if (paintedUpTo === head.hash) return;      // one pass per frame, however often we are called
-  paintedUpTo = head.hash;
   const log = $('log');
-  const evs = head.events || head.state.lastEvents || [];
-  for (const e of evs) {
-    const d = document.createElement('div');
-    d.className = 'ev new';
-    d.innerHTML = '<span class="t">' + head.state.tick + '</span>' + esc(typeof e === 'string' ? e : (e.text || JSON.stringify(e)));
-    log.append(d);
-    setTimeout(() => d.classList.remove('new'), 1200);
+  const entries = [];
+  for (let index = 0; index <= selectedIndex; index++) {
+    const frame = chain[index];
+    for (const event of frame.events || frame.state.lastEvents || []) {
+      entries.push({ tick: frame.state.tick, event });
+    }
   }
-  while (log.children.length > 300) log.removeChild(log.firstChild);
+  log.replaceChildren();
+  for (const { tick: eventTick, event } of entries.slice(-300)) {
+    const d = document.createElement('div');
+    d.className = 'ev';
+    d.innerHTML = '<span class="t">' + eventTick + '</span>' + esc(typeof event === 'string' ? event : (event.text || JSON.stringify(event)));
+    log.append(d);
+  }
   log.scrollTop = log.scrollHeight;
 }
 function esc(x) { return String(x == null ? '' : x).replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' })[c]); }
@@ -405,62 +548,324 @@ function esc(x) { return String(x == null ? '' : x).replace(/[<>&]/g, c => ({ '<
 /* ── driving the real game, through its real buttons ───────────────────────── */
 // No back door. This page clicks the controls a person would click, in the game's
 // own document — so anything it can make happen, you can make happen.
-function G() { try { return host.contentDocument; } catch (e) { return null; } }
-function press(id) { const d = G(); const b = d && d.getElementById(id); if (b) { b.click(); return true; } return false; }
 host.addEventListener('load', () => {
-  setTimeout(() => {
-    press('intro-start');
-    readChain();
-    stat(chain.length ? 'reading the game\'s own chain — press Play' : 'waiting for the first sealed frame');
-  }, 500);
+  installAuthorityRecordingGuard();
+  readChain(true);
+  stat(chain.length ? 'verified game loaded — press Play' : 'waiting for the first verified frame');
 });
 $('play').onclick = () => { if (!press('play-toggle')) stat('the game has not finished loading', 'bad'); };
 $('step').onclick = () => press('step-button');
-$('restart').onclick = () => { press('restart-button'); setTimeout(() => press('intro-start'), 300); };
+$('newseed').onclick = () => recordingActive ? refuseChainMutation('New seed') : press('restart-button');
+$('replay').onclick = () => recordingActive ? refuseChainMutation('Replay seed') : press('replay-button');
+$('live').onclick = () => press('live-button');
+$('fork').onclick = () => recordingActive ? refuseChainMutation('Fork') : press('fork-button');
+$('export').onclick = () => press('export-button');
+$('timeline').addEventListener('input', () => {
+  const timeline = G()?.getElementById('timeline');
+  if (!timeline) return;
+  timeline.value = $('timeline').value;
+  timeline.dispatchEvent(new Event('input', { bubbles: true }));
+});
 $('flatbtn').onclick = () => {
   const on = $('flat').classList.toggle('on');
-  $('flatbtn').textContent = on ? 'Hide the flat board' : 'Show the flat board';
+  $('flatbtn').textContent = on ? 'Hide game controls' : 'Show game controls';
+  $('flatbtn').setAttribute('aria-pressed', String(on));
 };
+
+let authorityRecordingGuardInstalled = false;
+function refuseChainMutation(label) {
+  const message = label + ' refused while recording: stop the recording before replacing or truncating the chain.';
+  stat(message, 'bad');
+  const authorityStatus = G()?.getElementById('status-live');
+  if (authorityStatus) {
+    authorityStatus.textContent = message;
+    authorityStatus.dataset.tone = 'error';
+  }
+  return false;
+}
+
+function installAuthorityRecordingGuard() {
+  if (authorityRecordingGuardInstalled) return;
+  const document = G();
+  const api = gameApi();
+  if (!document || !api) return;
+  authorityRecordingGuardInstalled = true;
+  const blockedButtons = new Map([
+    ['restart-button', 'New seed'],
+    ['replay-button', 'Replay seed'],
+    ['fork-button', 'Fork'],
+    ['import-button', 'Import']
+  ]);
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('button');
+    const label = button && blockedButtons.get(button.id);
+    if (!recordingActive || !label) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    refuseChainMutation(label);
+  }, true);
+  document.addEventListener('change', (event) => {
+    if (!recordingActive || event.target.id !== 'import-file') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.target.value = '';
+    refuseChainMutation('Import');
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    if (!recordingActive) return;
+    const key = event.key.toLowerCase();
+    if (key !== 'r' && key !== 'f') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    refuseChainMutation(key === 'f' ? 'Fork' : event.shiftKey ? 'New seed' : 'Replay seed');
+  }, true);
+  for (const [method, label] of [['restart', 'Restart'], ['fork', 'Fork'], ['importState', 'Import']]) {
+    const original = api[method].bind(api);
+    api[method] = (...args) => recordingActive
+      ? (refuseChainMutation(label), method === 'restart' ? api.state() : false)
+      : original(...args);
+  }
+}
+
+function syncRecordingGuardUI(state) {
+  installAuthorityRecordingGuard();
+  const document = G();
+  if (!document) return;
+  const writable = state.writeAccess && !state.authorityStale;
+  $('newseed').disabled = recordingActive || !writable;
+  $('replay').disabled = recordingActive || !writable;
+  $('fork').disabled = recordingActive || !writable || !state.viewingHistory;
+  document.getElementById('restart-button').disabled = recordingActive || !writable;
+  document.getElementById('replay-button').disabled = recordingActive || !writable;
+  document.getElementById('import-button').disabled = recordingActive || !writable;
+  document.getElementById('fork-button').disabled = recordingActive || !writable || !state.viewingHistory;
+}
+
+let lastControlSync = 0;
+function syncAuthorityControls(now = performance.now()) {
+  if (now - lastControlSync < 100) return;
+  lastControlSync = now;
+  const api = gameApi();
+  if (!api || typeof api.state !== 'function') return;
+  const state = api.state();
+  const writable = state.writeAccess && !state.authorityStale;
+  $('play').textContent = state.running ? '❚❚ Pause' : '▶ Play';
+  $('play').setAttribute('aria-pressed', String(state.running));
+  $('play').classList.toggle('go', !state.running);
+  $('play').classList.toggle('hot', state.running);
+  $('play').disabled = !writable || state.viewingHistory || state.liveOutcome !== 'active';
+  $('step').disabled = !writable || state.viewingHistory || state.liveOutcome !== 'active';
+  $('newseed').disabled = recordingActive || !writable;
+  $('replay').disabled = recordingActive || !writable;
+  $('live').disabled = !state.viewingHistory;
+  $('fork').disabled = recordingActive || !writable || !state.viewingHistory;
+  $('timeline').max = String(Math.max(0, state.frameCount - 1));
+  $('timeline').value = String(state.currentFrame.index);
+  $('timeline').setAttribute('aria-valuetext',
+    'Frame ' + (state.currentFrame.index + 1) + ' of ' + state.frameCount + ', tick ' + state.viewTick
+      + (state.viewingHistory ? ', historical' : ', live'));
+  if (state.authorityStale) {
+    stat('authority stale: ' + state.staleReason + ' · reload required', 'bad');
+  } else if (!state.writeAccess && state.lockDecisionMade) {
+    stat('verified read-only authority · another tab owns writes');
+  }
+  syncRecordingGuardUI(state);
+}
 
 /* ── recording ─────────────────────────────────────────────────────────────── */
 // The canvas can hand over its own stream, so this needs no picker and no permission:
 // it records exactly what is being drawn, and writes the webm out when you stop.
-let recorder = null, chunks = [], recStart = 0;
+let recorder = null, recordStream = null, chunks = null, recStart = 0;
+let recordStartHash = null, recordStartIndex = null;
+function stopRecordStream() {
+  if (!recordStream) return;
+  recordStream.getTracks().forEach((track) => track.stop());
+  recordStream = null;
+}
+function downloadBlob(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = name; anchor.rel = 'noopener';
+  document.body.append(anchor); anchor.click(); anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+function resetRecordingSetup(error) {
+  const failedRecorder = recorder;
+  recorder = null;
+  if (failedRecorder) {
+    failedRecorder.ondataavailable = null;
+    failedRecorder.onstop = null;
+    failedRecorder.onerror = null;
+    if (failedRecorder.state && failedRecorder.state !== 'inactive') {
+      try { failedRecorder.stop(); } catch (stopError) {}
+    }
+  }
+  stopRecordStream();
+  chunks = null;
+  recStart = 0;
+  recordStartHash = null;
+  recordStartIndex = null;
+  recordingActive = false;
+  syncRecordingGuardUI(gameApi().state());
+  $('rec').textContent = '● Record canvas';
+  $('rec').classList.remove('hot');
+  $('rec').setAttribute('aria-pressed', 'false');
+  $('rec').disabled = false;
+  stat('recording setup failed: ' + error.message, 'bad');
+}
 $('rec').onclick = async () => {
   if (recorder) { try { recorder.stop(); } catch (e) {} return; }
+  if (recordingActive) { stat('finalizing recording evidence…'); return; }
   if (!window.MediaRecorder || !renderer.domElement.captureStream) { stat('this browser will not record a canvas', 'bad'); return; }
-  const s = renderer.domElement.captureStream(30);
-  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  recordingActive = true;
+  syncRecordingGuardUI(gameApi().state());
   chunks = [];
-  recorder = new MediaRecorder(s, type ? { mimeType: type, videoBitsPerSecond: 6_000_000 } : {});
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-  recorder.onstop = async () => {
-    const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
-    const blob = new Blob(chunks, { type: (recorder && recorder.mimeType) || 'video/webm' });
-    recorder = null; chunks = [];
-    $('rec').textContent = '● Record'; $('rec').classList.remove('hot');
-    if (!blob.size) { stat('the recorder produced nothing', 'bad'); return; }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const name = 'dogg-heist-3d-' + stamp + '.webm';
-    for (const [n, b] of [[name, blob],
-                          [name.replace(/\.webm$/, '.frames.json'),
-                           new Blob([JSON.stringify({ recording: name, seconds: secs, frames: chain }, null, 2)],
-                                    { type: 'application/json' })]]) {
-      const u = URL.createObjectURL(b);
-      const a = document.createElement('a'); a.href = u; a.download = n; a.rel = 'noopener';
-      document.body.append(a); a.click(); a.remove();
+  recStart = 0;
+  recordStartHash = null;
+  recordStartIndex = null;
+  try {
+    recordStream = renderer.domElement.captureStream(30);
+    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+    recorder = new MediaRecorder(recordStream, type ? { mimeType: type, videoBitsPerSecond: 6_000_000 } : {});
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks?.push(e.data); };
+    recorder.onstop = async () => {
+    const activeRecorder = recorder;
+    const startedAt = recStart;
+    const startFrameHash = recordStartHash;
+    const startFrameIndex = recordStartIndex;
+    const secs = Math.max(0, Number(((Date.now() - startedAt) / 1000).toFixed(3)));
+    const blob = new Blob(chunks || [], { type: activeRecorder?.mimeType || 'video/webm' });
+    recorder = null; chunks = null;
+    recStart = 0;
+    recordStartHash = null;
+    recordStartIndex = null;
+    stopRecordStream();
+    $('rec').textContent = 'Finalizing evidence…'; $('rec').classList.remove('hot');
+    $('rec').setAttribute('aria-pressed', 'false');
+    $('rec').disabled = true;
+    if (!blob.size) {
+      recordingActive = false;
+      syncRecordingGuardUI(gameApi().state());
+      $('rec').textContent = '● Record canvas';
+      $('rec').disabled = false;
+      stat('the recorder produced nothing', 'bad');
+      return;
     }
-    // the hash is a plain sha256 of the file, so `shasum -a 256` on what you saved agrees
-    const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-    const hex = [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
-    stat('saved ' + name + ' (' + secs + 's) with its frames · sha256 ' + hex.slice(0, 24) + '…', 'ok');
-  };
-  recorder.start(1000); recStart = Date.now();
-  $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
-  stat('recording the 3D view', 'ok');
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = 'dogg-heist-3d-' + stamp + '.webm';
+      const endFrameHash = head?.hash || null;
+      const endFrameIndex = selectedIndex;
+      const verifiedExport = JSON.parse(gameApi().exportState());
+      const finalFrames = verifiedExport.data.frames;
+      const startIsMember = Number.isInteger(startFrameIndex)
+        && finalFrames[startFrameIndex]?.hash === startFrameHash;
+      const endIsMember = Number.isInteger(endFrameIndex)
+        && finalFrames[endFrameIndex]?.hash === endFrameHash;
+      if (!startIsMember || !endIsMember) {
+        recordingActive = false;
+        syncRecordingGuardUI(gameApi().state());
+        $('rec').textContent = '● Record canvas';
+        $('rec').disabled = false;
+        stat('recording evidence refused: start or end frame is absent from the final verified export', 'bad');
+        return;
+      }
+      const digestBytes = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+      const sha256 = [...new Uint8Array(digestBytes)].map(x => x.toString(16).padStart(2, '0')).join('');
+      downloadBlob(name, blob);
+      downloadBlob(name.replace(/\.webm$/, '.frames.json'),
+        new Blob([JSON.stringify({
+          recording: name,
+          seconds: secs,
+          canvasOnly: true,
+          bytes: blob.size,
+          sha256,
+          startFrameIndex,
+          startFrameHash,
+          endFrameIndex,
+          endFrameHash,
+          verifiedExport
+        }, null, 2)], { type: 'application/json' }));
+      recordingActive = false;
+      syncRecordingGuardUI(gameApi().state());
+      $('rec').textContent = '● Record canvas';
+      $('rec').disabled = false;
+      stat('saved ' + name + ' (' + secs + 's canvas-only, ' + blob.size + ' bytes) with verified evidence · sha256 ' + sha256.slice(0, 24) + '…', 'ok');
+    } catch (error) {
+      recordingActive = false;
+      syncRecordingGuardUI(gameApi().state());
+      $('rec').textContent = '● Record canvas';
+      $('rec').disabled = false;
+      stat('recording evidence failed: ' + error.message, 'bad');
+    }
+    };
+    recorder.onerror = () => {
+    recorder = null; chunks = null;
+    stopRecordStream();
+    recStart = 0;
+    recordStartHash = null;
+    recordStartIndex = null;
+    recordingActive = false;
+    syncRecordingGuardUI(gameApi().state());
+    $('rec').textContent = '● Record canvas'; $('rec').classList.remove('hot');
+    $('rec').setAttribute('aria-pressed', 'false');
+    $('rec').disabled = false;
+    stat('the canvas recorder failed', 'bad');
+    };
+    recorder.start(1000);
+    recStart = Date.now();
+    recordStartHash = head?.hash || null;
+    recordStartIndex = selectedIndex;
+    $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
+    $('rec').setAttribute('aria-pressed', 'true');
+    stat('recording the 3D canvas only', 'ok');
+  } catch (error) {
+    resetRecordingSetup(error);
+  }
 };
 
-addEventListener('storage', (e) => { if (e.key === KEY) readChain(); });
+addEventListener('beforeunload', stopRecordStream);
 resize(); tick();
 stat('loading the heist…');
+window.__heist3d = {
+  ingestCandidate,
+  readChain,
+  state: () => ({
+    frameCount: chain.length,
+    selectedIndex,
+    headHash: head?.hash || null,
+    authority: gameApi()?.state() || null,
+    recording: {
+      active: recordingActive,
+      hasRecorder: recorder !== null,
+      hasStream: recordStream !== null,
+      hasChunks: chunks !== null,
+      chunkCount: chunks?.length || 0,
+      startedAt: recStart,
+      startFrameHash: recordStartHash,
+      startFrameIndex: recordStartIndex
+    },
+    moverCount: movers.children.length,
+    worldCount: world.children.length,
+    frame: head ? JSON.parse(JSON.stringify(head)) : null,
+    movers: movers.children.map((mesh) => ({
+      key: mesh.userData.moverKey,
+      kind: mesh.userData.kind,
+      entityId: mesh.userData.entityId,
+      part: mesh.userData.part || null,
+      x: mesh.position.x,
+      y: mesh.position.y,
+      z: mesh.position.z,
+      uuid: mesh.uuid
+    })),
+    tiles: world.children.filter((mesh) => mesh.userData.kind === 'tile').map((mesh) => ({
+      tile: mesh.userData.tile,
+      gridX: mesh.userData.gridX,
+      gridY: mesh.userData.gridY,
+      x: mesh.position.x,
+      z: mesh.position.z
+    }))
+  })
+};
+}
 </script>

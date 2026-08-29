@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Workroom Studio</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<script id="peerjs" src="vendor/peerjs-1.5.2.min.js"></script>
 <style>
   :root{
     --bg:#0b0f0d; --panel:#111714; --line:#1f2a25; --ink:#e6efe9; --dim:#7f9289;
@@ -12,7 +12,8 @@
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden;
+       display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);
          background:var(--panel);flex-wrap:wrap}
   h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.2px}
@@ -25,14 +26,14 @@
   button[disabled]{opacity:.4;cursor:default}
   button.hot{background:var(--bad);border-color:var(--bad);color:#1a0505;font-weight:600}
   button.go{background:var(--accent);border-color:var(--accent);color:#04120b;font-weight:600}
-  main{display:flex;height:calc(100% - 49px)}
+  main{display:flex;flex:1;min-height:0}
   #stage{flex:1;min-width:0;position:relative;background:#000}
   iframe{width:100%;height:100%;border:0;display:block}
   aside{width:400px;flex:0 0 400px;border-left:1px solid var(--line);background:var(--panel);
         display:flex;flex-direction:column;min-height:0}
   .band{padding:10px 14px;border-bottom:1px solid var(--line)}
   .band h2{margin:0 0 6px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
-  .wire{flex:1;overflow:auto;padding:8px 10px;font:11.5px/1.6 var(--mono)}
+  .wire{flex:1;min-height:0;overflow:auto;padding:8px 10px;font:11.5px/1.6 var(--mono)}
   .fr{display:flex;gap:8px;padding:4px 6px;border-radius:6px;border-left:2px solid transparent}
   .fr.new{background:#14211a;border-left-color:var(--accent)}
   .fr .sq{color:var(--dim);min-width:26px;text-align:right}
@@ -65,7 +66,19 @@
   .cd .t{font-size:12.5px;font-weight:600}
   .cd .n{font-size:11.5px;color:var(--dim);margin-top:2px}
   .cd .w{font:10.5px var(--mono);color:var(--accent);margin-top:4px}
-  @media (max-width:900px){ aside{display:none} }
+  @media (max-width:900px){
+    main{flex-direction:column}
+    #stage,#watch{min-height:0}
+    aside,body.watching aside{display:flex;width:100%;flex:0 0 54%;overflow:hidden;
+                              border-left:0;border-top:1px solid var(--line)}
+    body.watching #watch{min-height:0}
+    .lanes{min-width:680px}
+    .band{padding:6px 8px}
+    .band h2{margin-bottom:3px}
+    .kv{grid-template-columns:52px 1fr;font-size:9px;line-height:1.3}
+    .wire{min-height:28px;padding:4px 6px;font-size:9px}
+    .stat{padding:5px 8px;min-height:28px;font-size:9px}
+  }
 </style>
 
 <header>
@@ -91,7 +104,7 @@
       </div>
     </div>
     <div class="wire" id="wire"></div>
-    <div class="band files" id="files" hidden><h2>Saved here</h2></div>
+    <div class="band files" id="files" hidden><h2>Downloads requested</h2></div>
     <div class="stat" id="stat">…</div>
   </aside>
 </main>
@@ -199,58 +212,217 @@ async function buildFrame(streamId, seq, payload, prev, floorUtc) {
 const $ = (id) => document.getElementById(id);
 const SPEC = 'rapp/1', KIND = 'memory.save';
 const LANES = [['now','Now'],['next','Next'],['blocked','Blocked'],['done','Done']];
+const LANE_IDS = LANES.map(([id]) => id);
+const EVENTS = ['room.opened', 'card.added', 'card.moved', 'card.edited', 'card.removed'];
+const KEYS_11 = 'frame_hash,kind,payload,payload_hash,prev,prev_wave,seq,sig,spec,stream_id,utc';
+const HASH_64 = /^[0-9a-f]{64}$/;
+const STREAM_ID = /^rappid:@[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+:[0-9a-f]{64}:[0-9a-f]{16}$/;
 const WATCH = (location.hash.match(/^#watch=([A-Za-z0-9_-]{1,64})$/) || [])[1] || null;
 
 let wireFrames = [];        // what has come over the wire, in order
 let wireStream = null;
 let lastGood = null;        // the last frame we accepted, for linkage
+let wireQueue = Promise.resolve();
+const streamHighWater = new Map(); // stream id -> highest accepted { seq, frame_hash }
 let watchers = new Map();   // peer id -> connection (studio side)
-let peer = null, recorder = null, chunks = [], recStream = null, recStart = 0;
+let peer = null, watcherPeer = null, watcherConn = null, reconnectTimer = null;
+let recorder = null, chunks = [], recStream = null, recStart = 0, pageLeaving = false;
+let recordingProvenance = null, frozenRecordingProvenance = null;
+let recordingFailure = null;
+const failedRecorders = new WeakMap();
+const objectUrls = new Set();
 
 const stat = (m, cls) => { const e = $('stat'); e.textContent = m; e.className = 'stat ' + (cls || ''); };
+function serializeWire(task) {
+  const run = wireQueue.then(task);
+  wireQueue = run.then(() => {}, () => {});
+  return run;
+}
 
 /* ── the wire ──────────────────────────────────────────────────────────────── */
 // Everything that arrives is verified before it is believed, including frames from
 // the iframe sitting next to us. "It came from our own page" is not a reason to skip
 // the check — the check is the whole reason the record is worth watching.
-async function frameIsGood(f, expectStream, prev) {
-  if (!f || typeof f !== 'object' || Array.isArray(f)) return 'not a frame';
-  const keys = Object.keys(f).sort().join(',');
-  if (keys !== 'frame_hash,kind,payload,payload_hash,prev,prev_wave,seq,sig,spec,stream_id,utc') return 'key set is not the eleven';
-  if (f.spec !== SPEC) return 'not ' + SPEC;
-  if (f.kind !== KIND) return 'kind is not ' + KIND;
-  if (expectStream && f.stream_id !== expectStream) return 'a different stream';
-  if (!Number.isSafeInteger(f.seq) || f.seq < 0) return 'seq is not a uint53';
-  if (prev && f.seq !== prev.seq + 1) return 'seq ' + f.seq + ' does not follow ' + prev.seq;
-  if (!prev && f.seq !== 0) return 'the first frame we see must be a genesis';
-  if (f.prev !== (prev ? prev.payload_hash : null)) return 'prev does not link to the frame before it';
-  if (f.prev_wave !== null) return 'prev_wave must be null on a memory stream';
-  if (f.sig !== null) return 'sig must be null';
-  if (prev && typeof f.utc === 'string' && f.utc < prev.utc) return 'time runs backwards';
-  let ph, fh;
-  try {
-    ph = await H('rapp/1:particle', f.payload);
-    const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
-    fh = await H('rapp/1:wave', pre);
-  } catch (e) { return 'could not be canonicalized — ' + e.message; }
-  if (ph !== f.payload_hash) return 'payload_hash does not match the payload';
-  if (fh !== f.frame_hash) return 'frame_hash does not match the frame';
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+function utcIsReal(u) {
+  if (typeof u !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u)) return false;
+  const d = new Date(u);
+  return !isNaN(d.getTime()) && d.toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z') === u;
+}
+function futureLimit() {
+  return new Date(Date.now() + 24 * 3600 * 1000).toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+}
+
+async function validateChain(list, expectStream) {
+  if (!Array.isArray(list)) return { ok: false, reason: 'that is not a chain' };
+  if (!list.length) return { ok: false, reason: 'there are no frames in that — a stream begins at its genesis' };
+  if (typeof expectStream !== 'string' || !STREAM_ID.test(expectStream)) {
+    return { ok: false, reason: 'stream_id is not a memory-stream rappid' };
+  }
+
+  const live = new Set();
+  let prev = null;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    const fail = (reason) => ({ ok: false, reason: `frame ${i}: ${reason}` });
+    if (!isPlainObject(f)) return fail('not an object');
+    if (Object.keys(f).sort().join(',') !== KEYS_11) return fail('key set is not the eleven');
+    if (f.spec !== SPEC) return fail('spec is not ' + SPEC);
+    if (f.kind !== KIND) return fail('kind is not ' + KIND);
+    if (typeof f.stream_id !== 'string' || !STREAM_ID.test(f.stream_id)) return fail('stream_id is not a memory-stream rappid');
+    if (f.stream_id !== expectStream) return fail('belongs to a different stream');
+    if (!Number.isSafeInteger(f.seq) || f.seq < 0) return fail('seq is not a uint53');
+    if (f.seq !== i) return fail('seq is ' + f.seq + ', expected ' + i);
+    if (!utcIsReal(f.utc)) return fail('utc is not a real time in the fixed 24-byte form');
+    if (f.utc > futureLimit()) return fail('utc is far in the future');
+    if (prev && f.utc < prev.utc) return fail('utc is earlier than the frame before it');
+    if (!isPlainObject(f.payload)) return fail('payload must be a JSON object');
+    if (typeof f.payload_hash !== 'string' || !HASH_64.test(f.payload_hash)) return fail('payload_hash is not 64 lowercase hex characters');
+    if (typeof f.frame_hash !== 'string' || !HASH_64.test(f.frame_hash)) return fail('frame_hash is not 64 lowercase hex characters');
+    if (i === 0 ? f.prev !== null : !HASH_64.test(f.prev || '')) return fail(i === 0 ? 'genesis prev must be null' : 'prev is not a payload hash');
+    if (i > 0 && f.prev !== prev.payload_hash) return fail('prev does not link to frame ' + (i - 1));
+    if (f.prev_wave !== null) return fail('prev_wave must be null on a memory stream');
+    if (f.sig !== null) return fail('sig must be null');
+
+    const p = f.payload;
+    if (!EVENTS.includes(p.event)) return fail('unknown event ' + JSON.stringify(p.event));
+    if (i === 0 && p.event !== 'room.opened') return fail('the first frame is not a genesis');
+    if (i > 0 && p.event === 'room.opened') return fail('a genesis can only be the first frame');
+    for (const key of ['title', 'note', 'who', 'titleAt']) {
+      if (key in p && typeof p[key] !== 'string') return fail(key + ' is not a string');
+    }
+    if (p.event !== 'room.opened' && (typeof p.card !== 'string' || !p.card)) return fail('no card id');
+    if (p.event === 'card.added') {
+      if (typeof p.title !== 'string') return fail('title is not a string');
+      if (!LANE_IDS.includes(p.lane)) return fail('names a lane that does not exist');
+      if (live.has(p.card)) return fail('card ' + p.card.slice(0, 6) + ' was already added');
+      live.add(p.card);
+    } else if (p.event === 'card.moved') {
+      if (!LANE_IDS.includes(p.lane)) return fail('names a lane that does not exist');
+      if ('at' in p && (!Number.isSafeInteger(p.at) || p.at < 0)) return fail('at is not a uint53');
+      if (!live.has(p.card)) return fail('card.moved on a card that is not there');
+    } else if (p.event === 'card.edited') {
+      if (!live.has(p.card)) return fail('card.edited on a card that is not there');
+    } else if (p.event === 'card.removed') {
+      if (!live.has(p.card)) return fail('removes a card that is not there');
+      live.delete(p.card);
+    }
+
+    try {
+      const ph = await H('rapp/1:particle', f.payload);
+      if (ph !== f.payload_hash) return fail('payload_hash does not match the payload');
+      const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
+      const fh = await H('rapp/1:wave', pre);
+      if (fh !== f.frame_hash) return fail('frame_hash does not match the frame');
+    } catch (e) {
+      return fail('could not be canonicalized — ' + e.message);
+    }
+    prev = f;
+  }
+  return { ok: true };
+}
+
+function highWaterObjection(frames, streamId) {
+  const high = streamHighWater.get(streamId);
+  if (!high) return null;
+  if (frames.length < high.seq + 1) {
+    return 'would roll the stream back below accepted seq ' + high.seq;
+  }
+  const acceptedHead = frames[high.seq];
+  if (!acceptedHead || acceptedHead.frame_hash !== high.frame_hash) {
+    return 'frame ' + high.seq + ' diverges from the accepted high-water';
+  }
   return null;
 }
 
-// Accept one frame onto the wire. Returns true if it landed.
-async function takeFrame(f, streamId) {
-  if (wireStream && streamId && streamId !== wireStream) {
-    // the board switched to another stream: start the wire again rather than
-    // splicing two chains into one and calling the result a record
-    wireFrames = []; lastGood = null; wireStream = streamId; $('wire').innerHTML = '';
+function rememberHighWater(frames, streamId) {
+  const head = frames[frames.length - 1];
+  const known = streamHighWater.get(streamId);
+  if (head && (!known || head.seq >= known.seq)) {
+    streamHighWater.set(streamId, { seq: head.seq, frame_hash: head.frame_hash });
   }
-  const why = await frameIsGood(f, wireStream, lastGood);
-  if (why) { stat('refused a frame: ' + why, 'bad'); return false; }
-  if (!wireStream) wireStream = f.stream_id;
-  wireFrames.push(f); lastGood = f;
-  paintFrame(f);
+}
+
+function trackAcceptedWireForRecording(forceNewSegment = false) {
+  if (!recordingProvenance || frozenRecordingProvenance || !wireStream || !wireFrames.length) return;
+  const frames = structuredClone(wireFrames);
+  const head = frames[frames.length - 1];
+  const segments = recordingProvenance.segments.slice();
+  const last = segments[segments.length - 1];
+  if (forceNewSegment || !last || last.stream_id !== wireStream) {
+    segments.push({
+      stream_id: wireStream,
+      frames,
+      start_seq: head.seq,
+      start_hash: head.frame_hash,
+      end_seq: head.seq,
+      end_hash: head.frame_hash,
+    });
+  } else {
+    segments[segments.length - 1] = {
+      ...last,
+      frames,
+      end_seq: head.seq,
+      end_hash: head.frame_hash,
+    };
+  }
+  recordingProvenance = { segments };
+}
+
+function beginRecordingProvenance() {
+  recordingProvenance = { segments: [] };
+  frozenRecordingProvenance = null;
+  trackAcceptedWireForRecording(true);
+}
+
+function freezeRecordingProvenance() {
+  if (!frozenRecordingProvenance) {
+    frozenRecordingProvenance = structuredClone(recordingProvenance || { segments: [] });
+  }
+  recordingProvenance = null;
+  return frozenRecordingProvenance;
+}
+
+function replaceWire(frames, streamId) {
+  wireFrames = frames.slice();
+  wireStream = streamId;
+  lastGood = wireFrames[wireFrames.length - 1] || null;
+  $('wire').innerHTML = '';
+  for (const frame of wireFrames) paintFrame(frame);
   paintMeta();
+  trackAcceptedWireForRecording();
+}
+
+async function acceptChain(frames, streamId) {
+  const candidate = Array.isArray(frames) ? frames.slice() : frames;
+  const verdict = await validateChain(candidate, streamId);
+  if (!verdict.ok) return verdict;
+  const rollback = highWaterObjection(candidate, streamId);
+  if (rollback) return { ok: false, reason: rollback };
+  rememberHighWater(candidate, streamId);
+  replaceWire(candidate, streamId);
+  return verdict;
+}
+
+// Accept one frame onto the wire. The live state is not touched until the whole
+// candidate chain verifies, so a bad stream switch cannot erase the last good board.
+async function takeFrame(f, streamId) {
+  const sameStream = wireStream === streamId;
+  const candidate = sameStream ? wireFrames.concat([f]) : [f];
+  const verdict = await validateChain(candidate, streamId);
+  if (!verdict.ok) { stat('refused a frame: ' + verdict.reason, 'bad'); return false; }
+  const rollback = highWaterObjection(candidate, streamId);
+  if (rollback) { stat('refused a frame: ' + rollback, 'bad'); return false; }
+  rememberHighWater(candidate, streamId);
+  if (sameStream) {
+    wireFrames = candidate; lastGood = f;
+    paintFrame(f); paintMeta();
+    trackAcceptedWireForRecording();
+  } else {
+    replaceWire(candidate, streamId);
+  }
   return true;
 }
 
@@ -286,6 +458,34 @@ function paintMeta() {
   $('meta').innerHTML = rows.map(([k, v]) => '<div>' + k + '</div><div>' + esc(v) + '</div>').join('');
 }
 
+function boardReport() {
+  try {
+    const el = $('f').contentDocument && $('f').contentDocument.getElementById('status');
+    return el ? { text: el.textContent.trim(), bad: el.classList.contains('bad') } : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function boardReportFailed(report) {
+  return !!(report && (report.bad
+    || /DID NOT verify|could not|refused|not saved|does not verify|storage is unavailable|cannot be saved|writes are disabled|SAFE READ-ONLY MODE/i.test(report.text)));
+}
+
+function reportRunEnd(m) {
+  const report = boardReport();
+  const empty = !wireFrames.length || !m.frames;
+  const failed = empty || boardReportFailed(report);
+  if (failed) {
+    stat(report && report.text
+      ? 'the board reported a failed run — ' + report.text
+      : 'the run ended without a verified genesis', 'bad');
+    return;
+  }
+  stat('the run finished — ' + wireFrames.length + ' verified frames on the wire'
+    + (report && report.text ? ' · ' + report.text : ''), 'ok');
+}
+
 /* ── the studio: the board runs next door and every frame it commits comes here ── */
 if (!WATCH) {
   window.addEventListener('message', async (e) => {
@@ -293,25 +493,47 @@ if (!WATCH) {
     const m = e.data;
     if (!m || typeof m !== 'object') return;
     if (m.rapp === 'frame') {
-      if (await takeFrame(m.frame, m.stream_id)) relay({ rapp: 'frame', stream_id: m.stream_id, frame: m.frame });
+      if (await serializeWire(() => takeFrame(m.frame, m.stream_id))) {
+        relay({ rapp: 'frame', stream_id: m.stream_id, frame: m.frame });
+      }
       return;
     }
     if (m.rapp === 'chain' && Array.isArray(m.frames)) {
-      wireFrames = []; lastGood = null; wireStream = null; $('wire').innerHTML = '';
-      for (const f of m.frames) if (!(await takeFrame(f, m.stream_id))) break;
+      const accepted = await serializeWire(() => acceptChain(m.frames, m.stream_id));
+      if (!accepted.ok) {
+        stat('refused a chain: ' + accepted.reason + ' — the last good wire was preserved', 'bad');
+        return;
+      }
       relay({ rapp: 'chain', stream_id: wireStream, frames: wireFrames });
-      stat(wireFrames.length + ' frames on the wire, every one verified here', 'ok');
+      const report = boardReport();
+      if (boardReportFailed(report)) {
+        stat('the chain verifies, but the board reported a failure — ' + report.text, 'bad');
+      } else {
+        stat(wireFrames.length + ' frames on the wire, every one verified here', 'ok');
+      }
       return;
     }
     if (m.rapp === 'state') {
       if (m.what === 'scenario' || m.what === 'fork') ask('chain');
-      if (m.what === 'run-ended') stat('the run finished — ' + wireFrames.length + ' frames on the wire', 'ok');
+      if (m.what === 'run-ended') {
+        serializeWire(async () => {
+          await new Promise(resolve => setTimeout(resolve, 0));
+          reportRunEnd(m);
+        });
+      }
       return;
     }
   });
   const ask = (what) => { try { $('f').contentWindow.postMessage({ rapp: 'command', do: what }, '*'); } catch (e) {} };
   $('f').addEventListener('load', () => setTimeout(() => ask('chain'), 400));
-  $('run').onclick = () => { ask('run'); stat('the board is working — every frame it commits lands on the wire'); };
+  $('run').onclick = () => {
+    ask('run');
+    stat('the board is working — every frame it commits lands on the wire');
+    setTimeout(() => {
+      const report = boardReport();
+      if (boardReportFailed(report)) stat('the board refused the run — ' + report.text, 'bad');
+    }, 100);
+  };
   $('agents').onclick = () => ask('agents');
 }
 
@@ -320,65 +542,244 @@ if (!WATCH) {
 // re-derives the board itself, verifying each one — so what is shared is the record,
 // and the watcher's copy is as good as the original rather than a video of it.
 function relay(msg) {
-  for (const [, c] of watchers) { try { c.send(msg); } catch (e) {} }
+  for (const [id, c] of watchers) {
+    try { c.send(msg); }
+    catch (e) {
+      if (watchers.get(id) === c) watchers.delete(id);
+    }
+  }
+  paintMeta();
 }
 
-function goLive() {
-  if (peer) {
-    peer.destroy(); peer = null; watchers.clear();
-    $('livedot').className = 'dot'; $('livelabel').textContent = 'Go live';
-    $('linkrow').hidden = true; paintMeta(); stat('off the air'); return;
-  }
+const PEER_SRC = 'vendor/peerjs-1.5.2.min.js';
+let peerLoad = null;
+
+async function ensurePeerJs() {
+  if (typeof window.Peer === 'function') return true;
+  if (peerLoad) return peerLoad;
+  peerLoad = new Promise((resolve) => {
+    const old = $('peerjs');
+    if (old) old.remove();
+    const script = document.createElement('script');
+    script.id = 'peerjs'; script.src = PEER_SRC;
+    const done = (ok) => { clearTimeout(timeout); peerLoad = null; resolve(ok && typeof window.Peer === 'function'); };
+    const timeout = setTimeout(() => done(false), 8000);
+    script.onload = () => done(true);
+    script.onerror = () => done(false);
+    document.head.append(script);
+  });
+  return peerLoad;
+}
+
+function updateWatcherCount(message) {
+  paintMeta();
+  stat(message || (watchers.size ? watchers.size + ' watching' : 'live — waiting for watchers'), 'ok');
+}
+
+function removeWatcher(c) {
+  if (watchers.get(c.peer) !== c) return;
+  watchers.delete(c.peer);
+  updateWatcherCount();
+}
+
+function attachWatcherConnection(c) {
+  c.on('open', () => {
+    const old = watchers.get(c.peer);
+    watchers.set(c.peer, c);
+    if (old && old !== c) { try { old.close(); } catch (e) {} }
+    paintMeta();
+    try { c.send({ rapp: 'chain', stream_id: wireStream, frames: wireFrames }); } catch (e) { removeWatcher(c); return; }
+    updateWatcherCount();
+  });
+  c.on('close', () => removeWatcher(c));
+  c.on('error', () => removeWatcher(c));
+}
+
+function stopLive(message = 'off the air') {
+  const old = peer; peer = null;
+  for (const [, c] of watchers) { try { c.close(); } catch (e) {} }
+  watchers.clear();
+  if (old) { try { old.destroy(); } catch (e) {} }
+  $('livedot').className = 'dot'; $('livelabel').textContent = 'Go live';
+  $('golive').disabled = false; $('link').value = ''; $('linkrow').hidden = true;
+  paintMeta(); stat(message);
+}
+
+function liveRetry(message, owner) {
+  if (owner && peer !== owner) return;
+  const old = peer; peer = null;
+  if (old) { try { old.destroy(); } catch (e) {} }
+  for (const [, c] of watchers) { try { c.close(); } catch (e) {} }
+  watchers.clear();
+  $('livedot').className = 'dot'; $('livelabel').textContent = 'Retry live';
+  $('golive').disabled = false; $('link').value = ''; $('linkrow').hidden = true;
+  paintMeta(); stat(message + ' — press Retry live', 'bad');
+}
+
+async function startLive() {
+  $('golive').disabled = true;
+  $('livelabel').textContent = 'Opening…';
   stat('opening a channel…');
-  peer = new Peer();
-  peer.on('open', (id) => {
+  if (!(await ensurePeerJs())) {
+    $('golive').disabled = false; $('livelabel').textContent = 'Retry live';
+    stat('live sharing is unavailable because PeerJS did not load — press Retry live', 'bad');
+    return;
+  }
+  let mine;
+  try { mine = new Peer(); }
+  catch (e) {
+    $('golive').disabled = false; $('livelabel').textContent = 'Retry live';
+    stat('the live channel could not start — ' + e.message + ' — press Retry live', 'bad');
+    return;
+  }
+  peer = mine;
+  mine.on('open', (id) => {
+    if (peer !== mine) return;
     const url = location.href.split('#')[0] + '#watch=' + id;
     $('link').value = url; $('linkrow').hidden = false;
     $('livedot').className = 'dot live';
     $('livelabel').textContent = 'On the air';
+    $('golive').disabled = false;
     stat('live — anyone with that link watches the frames arrive, in their own browser', 'ok');
   });
-  peer.on('connection', (c) => {
-    c.on('open', () => {
-      watchers.set(c.peer, c); paintMeta();
-      try { c.send({ rapp: 'chain', stream_id: wireStream, frames: wireFrames }); } catch (e) {}
-      stat(watchers.size + ' watching', 'ok');
-    });
-    c.on('close', () => { watchers.delete(c.peer); paintMeta(); });
-    c.on('error', () => { watchers.delete(c.peer); paintMeta(); });
+  mine.on('connection', attachWatcherConnection);
+  mine.on('disconnected', () => {
+    if (peer !== mine) return;
+    $('livelabel').textContent = 'Reconnecting…';
+    stat('the signaling channel disconnected — reconnecting…', 'warn');
+    try { mine.reconnect(); } catch (e) { liveRetry('the signaling channel disconnected', mine); }
   });
-  peer.on('error', (e) => stat('the channel would not open — ' + e.type, 'bad'));
+  mine.on('close', () => liveRetry('the live channel closed', mine));
+  mine.on('error', (e) => liveRetry('the channel would not open — ' + (e && e.type || 'unknown error'), mine));
+}
+
+function goLive() {
+  if (peer) stopLive();
+  else startLive();
 }
 
 /* ── watching ──────────────────────────────────────────────────────────────── */
+function destroyWatcher() {
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  const c = watcherConn; watcherConn = null;
+  const p = watcherPeer; watcherPeer = null;
+  if (c) { try { c.close(); } catch (e) {} }
+  if (p) { try { p.destroy(); } catch (e) {} }
+}
+
+function scheduleWatcherReconnect(message) {
+  if (pageLeaving) return;
+  stat(message + ' — retrying…', 'warn');
+  $('livedot').className = 'dot';
+  $('livelabel').textContent = 'Retry connection';
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => startWatching(), 1500);
+}
+
+function attachHostConnection(c, owner) {
+  watcherConn = c;
+  c.on('open', () => {
+    if (watcherPeer !== owner || watcherConn !== c) return;
+    $('livedot').className = 'dot live';
+    $('livelabel').textContent = 'Connected';
+    stat('connected — waiting for the record');
+  });
+  c.on('data', async (m) => {
+    if (watcherPeer !== owner || watcherConn !== c || !m || typeof m !== 'object') return;
+    if (m.rapp === 'chain' && Array.isArray(m.frames)) {
+      const accepted = await serializeWire(() => acceptChain(m.frames, m.stream_id));
+      if (!accepted.ok) {
+        stat('refused a chain: ' + accepted.reason + ' — the last good board was preserved', 'bad');
+        return;
+      }
+      paintBoard();
+      stat(wireFrames.length + ' frames received and verified here — the board below was rebuilt from them', 'ok');
+      return;
+    }
+    if (m.rapp === 'frame') {
+      if (await serializeWire(() => takeFrame(m.frame, m.stream_id))) { paintBoard(m.frame); stat('live', 'ok'); }
+    }
+  });
+  c.on('close', () => {
+    if (watcherConn !== c) return;
+    watcherConn = null;
+    if (watcherPeer === owner) {
+      watcherPeer = null;
+      try { owner.destroy(); } catch (e) {}
+    }
+    scheduleWatcherReconnect('the broadcast connection closed');
+  });
+  c.on('error', (e) => {
+    if (watcherConn !== c) return;
+    watcherConn = null;
+    if (watcherPeer === owner) {
+      watcherPeer = null;
+      try { owner.destroy(); } catch (e2) {}
+    }
+    scheduleWatcherReconnect('lost the connection — ' + (e && e.type || 'unknown'));
+  });
+}
+
+async function startWatching(manual = false) {
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  if (manual) destroyWatcher();
+  $('livelabel').textContent = 'Connecting…';
+  $('golive').disabled = true;
+  stat('connecting…');
+  if (!(await ensurePeerJs())) {
+    $('golive').disabled = false; $('livelabel').textContent = 'Retry connection';
+    stat('live sharing is unavailable because PeerJS did not load — press Retry connection', 'bad');
+    return;
+  }
+  if (watcherPeer && !watcherPeer.destroyed) {
+    try {
+      const c = watcherPeer.connect(WATCH, { serialization: 'json' });
+      attachHostConnection(c, watcherPeer);
+      $('golive').disabled = false;
+      return;
+    } catch (e) {
+      destroyWatcher();
+    }
+  }
+  let mine;
+  try { mine = new Peer(); }
+  catch (e) {
+    $('golive').disabled = false; $('livelabel').textContent = 'Retry connection';
+    stat('could not start the watcher — ' + e.message, 'bad');
+    return;
+  }
+  watcherPeer = mine;
+  mine.on('open', () => {
+    if (watcherPeer !== mine) return;
+    const c = mine.connect(WATCH, { serialization: 'json' });
+    attachHostConnection(c, mine);
+    $('golive').disabled = false;
+  });
+  mine.on('disconnected', () => {
+    if (watcherPeer !== mine) return;
+    stat('the signaling channel disconnected — reconnecting…', 'warn');
+    try { mine.reconnect(); } catch (e) { scheduleWatcherReconnect('the signaling channel disconnected'); }
+  });
+  mine.on('close', () => {
+    if (watcherPeer !== mine) return;
+    watcherPeer = null;
+    scheduleWatcherReconnect('the watcher channel closed');
+  });
+  mine.on('error', (e) => {
+    if (watcherPeer !== mine) return;
+    watcherPeer = null;
+    try { mine.destroy(); } catch (e2) {}
+    scheduleWatcherReconnect('could not join — ' + (e && e.type || 'unknown'));
+  });
+}
+
 if (WATCH) {
   document.body.classList.add('watching');
   $('mode').textContent = '· watching a live board';
-  for (const b of ['run', 'agents', 'golive']) $(b).remove();
-  stat('connecting…');
-  const p = new Peer();
-  p.on('open', () => {
-    const c = p.connect(WATCH, { serialization: 'json' });
-    c.on('open', () => stat('connected — waiting for the record'));
-    c.on('data', async (m) => {
-      if (!m || typeof m !== 'object') return;
-      if (m.rapp === 'chain' && Array.isArray(m.frames)) {
-        wireFrames = []; lastGood = null; wireStream = null; $('wire').innerHTML = '';
-        let ok = 0;
-        for (const f of m.frames) { if (await takeFrame(f, m.stream_id)) ok++; else break; }
-        stat(ok + ' frames received and verified here — the board below was rebuilt from them', 'ok');
-        paintBoard();
-        return;
-      }
-      if (m.rapp === 'frame') {
-        if (await takeFrame(m.frame, m.stream_id)) { paintBoard(m.frame); stat('live', 'ok'); }
-        return;
-      }
-    });
-    c.on('close', () => stat('the broadcast ended', 'warn'));
-    c.on('error', (e) => stat('lost the connection — ' + (e && e.type || 'unknown'), 'bad'));
-  });
-  p.on('error', (e) => stat('could not join — ' + e.type, 'bad'));
+  for (const b of ['run', 'agents']) $(b).remove();
+  $('livelabel').textContent = 'Connecting…';
+  $('golive').onclick = () => startWatching(true);
+  startWatching();
 }
 
 // The watcher's own projection. Not a mirror of the studio's DOM: the same rules
@@ -395,7 +796,9 @@ function project(list) {
     } else if (p.event === 'card.moved') {
       const c = b.cards[id]; if (!c || !b.order[p.lane]) continue;
       b.order[c.lane] = b.order[c.lane].filter(x => x !== id);
-      c.lane = p.lane; b.order[p.lane].push(id);
+      c.lane = p.lane;
+      const to = b.order[p.lane];
+      to.splice(Math.min(Number.isSafeInteger(p.at) ? p.at : to.length, to.length), 0, id);
     } else if (p.event === 'card.edited') {
       const c = b.cards[id]; if (!c) continue;
       if ('title' in p) c.title = p.title;
@@ -416,10 +819,12 @@ function paintBoard(justArrived) {
   const el = $('lanes'); el.innerHTML = '';
   for (const [id, name] of LANES) {
     const d = document.createElement('div'); d.className = 'ln';
+    d.dataset.lane = id;
     const h = document.createElement('h3'); h.textContent = name + ' · ' + (b.order[id] || []).length; d.append(h);
     for (const cid of (b.order[id] || [])) {
       const c = b.cards[cid]; if (!c) continue;
       const cd = document.createElement('div'); cd.className = 'cd' + (cid === touched ? ' fresh' : '');
+      cd.dataset.id = cid;
       const t = document.createElement('div'); t.className = 't'; t.textContent = c.title; cd.append(t);
       if (c.note) { const nn = document.createElement('div'); nn.className = 'n'; nn.textContent = c.note; cd.append(nn); }
       if (c.who) { const w = document.createElement('div'); w.className = 'w'; w.textContent = c.who; cd.append(w); }
@@ -432,7 +837,34 @@ function paintBoard(justArrived) {
 /* ── recording ─────────────────────────────────────────────────────────────── */
 // The browser will not hand a page a picture of itself without the person saying so,
 // which is right — so this asks, and the picker is the consent. What comes back is
-// recorded to webm and written to disk when you stop. Nothing is uploaded anywhere.
+// recorded to webm and offered to the browser as downloads. Nothing is uploaded anywhere.
+function resetRecordingUi() {
+  $('recdot').className = 'dot';
+  $('reclabel').textContent = 'Record';
+  $('rec').classList.remove('hot');
+  $('rec').disabled = false;
+}
+
+function stopCaptureTracks(stream) {
+  try { if (stream) stream.getTracks().forEach(track => track.stop()); } catch (e) {}
+}
+
+function failRecorder(owner, event) {
+  const error = event && event.error;
+  const reason = String(error && (error.message || error.name)
+    || event && (event.message || event.name) || 'unknown recorder error');
+  failedRecorders.set(owner, reason);
+  if (recorder === owner) {
+    recordingFailure = { reason };
+    stopCaptureTracks(recStream);
+    recStream = null; recorder = null; chunks = []; recStart = 0;
+    recordingProvenance = null; frozenRecordingProvenance = null;
+    resetRecordingUi();
+    stat('recording failed — ' + reason + ' — no evidence downloads were requested; you can retry', 'bad');
+  }
+  try { if (owner.state !== 'inactive') owner.stop(); } catch (e) {}
+}
+
 async function toggleRecord() {
   if (recorder) { stopRecording(); return; }
   if (!window.MediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -443,62 +875,123 @@ async function toggleRecord() {
     s = await navigator.mediaDevices.getDisplayMedia({
       video: { displaySurface: 'browser', frameRate: 30 }, audio: false, preferCurrentTab: true,
     });
-  } catch (e) { stat('recording was not started — ' + (e.name === 'NotAllowedError' ? 'you cancelled the picker' : e.message), 'warn'); return; }
-  recStream = s;
-  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-    .find(t => MediaRecorder.isTypeSupported(t)) || '';
-  chunks = [];
-  try { recorder = new MediaRecorder(s, type ? { mimeType: type, videoBitsPerSecond: 4_000_000 } : {}); }
-  catch (e) { stat('could not start the recorder — ' + e.message, 'bad'); s.getTracks().forEach(t => t.stop()); return; }
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-  recorder.onstop = saveRecording;
-  // If the person stops the share from the browser's own bar, that IS the stop.
-  s.getVideoTracks().forEach(t => t.addEventListener('ended', () => { if (recorder) stopRecording(); }));
-  recorder.start(1000);
-  recStart = Date.now();
-  $('recdot').className = 'dot on';
-  $('reclabel').textContent = 'Stop and save';
-  $('rec').classList.add('hot');
-  stat('recording — press again to stop and write the file', 'warn');
+  } catch (e) {
+    stat('recording was not started — '
+      + (e.name === 'NotAllowedError' ? 'capture permission was denied or the picker was cancelled' : e.message), 'warn');
+    return;
+  }
+  try {
+    recordingFailure = null;
+    recStream = s;
+    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    chunks = [];
+    const activeRecorder = new MediaRecorder(s, type ? { mimeType: type, videoBitsPerSecond: 4_000_000 } : {});
+    recorder = activeRecorder;
+    activeRecorder.ondataavailable = (e) => {
+      if (recorder === activeRecorder && !failedRecorders.has(activeRecorder) && e.data && e.data.size) chunks.push(e.data);
+    };
+    activeRecorder.onerror = (e) => failRecorder(activeRecorder, e);
+    activeRecorder.onstop = () => saveRecording(activeRecorder);
+    // If the person stops the share from the browser's own bar, that IS the stop.
+    s.getVideoTracks().forEach(t => t.addEventListener('ended', () => {
+      if (recorder === activeRecorder) stopRecording();
+    }));
+    beginRecordingProvenance();
+    activeRecorder.start(1000);
+    recStart = Date.now();
+    $('recdot').className = 'dot on';
+    $('reclabel').textContent = 'Stop and download';
+    $('rec').classList.add('hot');
+    stat('recording — press again to stop and request the downloads', 'warn');
+  } catch (e) {
+    stopCaptureTracks(s);
+    recStream = null; recorder = null; chunks = []; recStart = 0;
+    recordingProvenance = null; frozenRecordingProvenance = null;
+    recordingFailure = null;
+    resetRecordingUi();
+    stat('could not start the recorder — ' + e.message + ' — you can retry', 'bad');
+  }
 }
 
 function stopRecording() {
+  if (recorder) freezeRecordingProvenance();
   try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch (e) {}
-  try { if (recStream) recStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  stopCaptureTracks(recStream);
   recStream = null;
 }
 
-async function saveRecording() {
+function requestDownload(url, name) {
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  document.body.append(a);
+  try { a.click(); return true; }
+  catch (e) { return false; }
+  finally { a.remove(); }
+}
+
+async function saveRecording(owner = recorder) {
+  const failure = owner && failedRecorders.get(owner);
+  if (failure) {
+    if (recorder === owner) {
+      stopCaptureTracks(recStream);
+      recStream = null; recorder = null; chunks = []; recStart = 0;
+      recordingProvenance = null; frozenRecordingProvenance = null;
+      recordingFailure = { reason: failure };
+      resetRecordingUi();
+      stat('recording failed — ' + failure + ' — no evidence downloads were requested; you can retry', 'bad');
+    }
+    return;
+  }
+  if (owner !== recorder) return;
+  const provenance = structuredClone(frozenRecordingProvenance || freezeRecordingProvenance());
   const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
-  const blob = new Blob(chunks, { type: (recorder && recorder.mimeType) || 'video/webm' });
-  recorder = null; chunks = [];
-  $('recdot').className = 'dot'; $('reclabel').textContent = 'Record'; $('rec').classList.remove('hot');
-  if (!blob.size) { stat('the recorder produced nothing — nothing was saved', 'bad'); return; }
+  const blob = new Blob(chunks, { type: (owner && owner.mimeType) || 'video/webm' });
+  recorder = null; chunks = []; recStart = 0;
+  recordingProvenance = null; recordingFailure = null;
+  resetRecordingUi();
+  if (pageLeaving) { frozenRecordingProvenance = null; return; }
+  if (!blob.size) {
+    frozenRecordingProvenance = null;
+    stat('the recorder produced nothing — no download was requested', 'bad');
+    return;
+  }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const name = 'workroom-session-' + stamp + '.webm';
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = name; a.rel = 'noopener';
-  document.body.append(a); a.click(); a.remove();
+  objectUrls.add(url);
 
   // The record that goes with the film: the exact frames that were on the wire while
   // it was rolling, so the video can be checked against something rather than believed.
-  // plain sha256 over the file's own bytes, so `shasum -a 256` on what you saved agrees
+  // plain sha256 over the file's own bytes, so `shasum -a 256` on a completed download agrees
   const sha = await sha256Hex(new Uint8Array(await blob.arrayBuffer()));
-  const side = JSON.stringify({
+  const record = {
     recording: name, seconds: secs, bytes: blob.size, sha256: sha,
-    stream_id: wireStream, frames: wireFrames,
-  }, null, 2);
+    segments: provenance.segments,
+  };
+  if (provenance.segments.length === 1) {
+    record.stream_id = provenance.segments[0].stream_id;
+    record.frames = provenance.segments[0].frames;
+  }
+  const side = JSON.stringify(record, null, 2);
+  frozenRecordingProvenance = null;
   const surl = URL.createObjectURL(new Blob([side], { type: 'application/json' }));
-  const b2 = document.createElement('a'); b2.href = surl; b2.download = name.replace(/\.webm$/, '.frames.json');
-  document.body.append(b2); b2.click(); b2.remove();
+  objectUrls.add(surl);
+  const requested = [
+    requestDownload(url, name),
+    requestDownload(surl, name.replace(/\.webm$/, '.frames.json')),
+  ].filter(Boolean).length;
 
   const box = $('files'); box.hidden = false;
   const row = document.createElement('div');
   row.innerHTML = '<a href="' + url + '" download="' + name + '">' + name + '</a><div>'
-                + secs + 's · ' + (blob.size / 1048576).toFixed(1) + ' MB · sha256 ' + sha + '</div>';
+                + secs + 's · ' + (blob.size / 1048576).toFixed(1) + ' MB · sha256 ' + sha
+                + ' · download requested</div>';
   box.append(row);
-  stat('saved ' + name + ' (' + secs + 's) and the frames beside it', 'ok');
+  stat(requested === 2
+    ? 'requested browser downloads for ' + name + ' (' + secs + 's) and its frames'
+    : 'the browser download request could not be started for every recording file', requested === 2 ? 'ok' : 'bad');
 }
 
 $('rec').onclick = () => toggleRecord();
@@ -508,7 +1001,19 @@ $('copy').onclick = async () => {
         setTimeout(() => $('copy').textContent = 'Copy', 1200); }
   catch (e) { $('link').select(); }
 };
-window.addEventListener('beforeunload', () => { stopRecording(); if (peer) peer.destroy(); });
+function cleanupPageResources() {
+  if (pageLeaving) return;
+  pageLeaving = true;
+  stopRecording();
+  recordingProvenance = null; frozenRecordingProvenance = null;
+  recordingFailure = null;
+  destroyWatcher();
+  if (peer) stopLive('');
+  for (const url of objectUrls) URL.revokeObjectURL(url);
+  objectUrls.clear();
+}
+window.addEventListener('pagehide', cleanupPageResources);
+window.addEventListener('beforeunload', cleanupPageResources);
 
 paintMeta();
 if (WATCH) paintBoard();

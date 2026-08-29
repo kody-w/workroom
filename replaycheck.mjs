@@ -1,54 +1,48 @@
 import { chromium } from 'playwright';
-const b = await chromium.launch();
-const p = await (await b.newContext({ viewport:{width:1440,height:900} })).newPage();
-p.on('pageerror', e => console.log('  [page error] ' + e.message));
-await p.goto('file:///Users/kodywildfeuer/workroom/index.html');
-await p.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
-await p.waitForTimeout(700);
-const say=(k,v)=>console.log('  '+k.padEnd(36)+v);
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const cards = () => p.locator('.card').count();
-say('at head, cards', String(await cards()));
-say('timeline reads', (await p.textContent('#atframe')).replace(/\s+/g,' ').trim());
+const here = dirname(fileURLToPath(import.meta.url));
+const APP = 'file://' + join(here, 'index.html');
+const browser = await chromium.launch();
+const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+let bad = 0;
+const check = (name, pass, detail = '') => {
+  console.log('  ' + name.padEnd(38) + (pass ? 'yes' : 'NO') + (detail ? ' — ' + detail : ''));
+  if (!pass) bad++;
+};
+page.on('pageerror', error => { console.log('  PAGE ERROR — ' + error.message); bad++; });
 
-// scrub back to the very first frame — the world should be empty there
-await p.locator('#scrub').fill('0');
-await p.dispatchEvent('#scrub', 'input');
-await p.waitForTimeout(300);
-say('at frame 0, cards', String(await cards()));
-say('frame 0 is the genesis', /frame 0 /.test(await p.textContent('#atframe')) ? 'yes' : 'NO');
-say('board marked as past', String(await p.evaluate(() => document.body.classList.contains('past'))));
-say('editing hidden while rewound', String(await p.locator('.add').first().isVisible().catch(() => false)));
+await page.goto(APP);
+await page.waitForFunction(() => typeof frames !== 'undefined' && frames.length > 1);
+const headCards = await page.locator('.card').count();
 
-// walk forward and watch it build
-const counts = [];
-for (const n of ['3','6','9','12']) {
-  await p.locator('#scrub').fill(n); await p.dispatchEvent('#scrub', 'input');
-  await p.waitForTimeout(160); counts.push(await cards());
-}
-say('cards as it replays', counts.join(' → '));
-say('it grows', String(counts[counts.length-1] >= counts[0]));
+await page.locator('#scrub').fill('0');
+await page.dispatchEvent('#scrub', 'input');
+check('frame zero is an empty world', await page.locator('.card').count() === 0);
+check('rewound board is marked past', await page.evaluate(() => document.body.classList.contains('past')));
+check('editing is hidden while rewound', !(await page.locator('.add').first().isVisible()));
 
-// a write while rewound must be refused
-await p.locator('#scrub').fill('4'); await p.dispatchEvent('#scrub', 'input');
-await p.waitForTimeout(150);
-const before = await p.evaluate(() => JSON.parse(localStorage.getItem('workroom.frames')).length);
-await p.evaluate(() => addCard('now', 'should not be written'));
-await p.waitForTimeout(300);
-const after = await p.evaluate(() => JSON.parse(localStorage.getItem('workroom.frames')).length);
-say('write while rewound refused', String(after === before));
-say('and says why', /earlier frame/i.test(await p.textContent('#status')) ? 'yes' : 'NO');
+const before = await page.evaluate(() => frames.length);
+await page.evaluate(() => addCard('now', 'must not be written'));
+check('rewound write is refused', await page.evaluate(n => frames.length === n, before));
+check('rewound refusal explains why', /earlier frame/i.test(await page.textContent('#status')));
 
-// return to now
-await p.click('#now'); await p.waitForTimeout(300);
-say('return to now restores head', String(await cards()));
-say('no longer past', String(!(await p.evaluate(() => document.body.classList.contains('past')))));
+await page.click('#now');
+check('return to now restores head board', await page.locator('.card').count() === headCards);
+check('return clears past state', !(await page.evaluate(() => document.body.classList.contains('past'))));
 
-// and the replay button runs
-await p.click('#play'); await p.waitForTimeout(900);
-const mid = await p.textContent('#atframe');
-await p.waitForTimeout(6000);
-say('replay ran and landed at head', /frame \d+ \/ \d+/.test(await p.textContent('#atframe'))
-  && await p.evaluate(() => viewAt === null) ? 'yes' : 'still at ' + mid.slice(0,18));
-await p.screenshot({ path: '/Users/kodywildfeuer/workroom/shot.png' });
-await b.close();
+await page.click('#play');
+await page.waitForTimeout(900);
+await page.click('#play');
+check('pause clears replay state', await page.evaluate(() => playing === null
+  && !document.body.classList.contains('playing')));
+check('pause clears replay caption', !(await page.locator('#caption').isVisible()));
+
+await page.click('#play');
+await page.waitForFunction(() => viewAt === null && playing === null, null, { timeout: 20000 });
+check('replay lands at the live head', await page.evaluate(() => viewAt === null && playing === null));
+
+await browser.close();
+console.log(bad ? `\n${bad} replay check(s) failed` : '\nreplay, pause, rewind, and return-to-head all passed');
+process.exit(bad ? 1 : 0);

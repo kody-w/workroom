@@ -1,7 +1,13 @@
 node_modules
 .parity.py
 .parity-cases.json
-# throwaway probes left by review agents
+# Local review and browser-run artifacts
 .probe*.mjs
 probe*.mjs
 .quota.mjs
+resetprobe.mjs
+forkmidrun-*.mjs
+scratch/
+scratchprobe/
+test-results/
+playwright-report/

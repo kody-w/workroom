@@ -1353,7 +1353,8 @@
     <nav class="control-deck" aria-label="Simulation controls">
       <button class="primary" id="play-toggle" type="button" aria-pressed="false">▶ Play</button>
       <button id="step-button" type="button">Tick +1</button>
-      <button id="restart-button" type="button" title="Start a deterministic new seed. Press R to replay this seed.">New seed</button>
+      <button id="replay-button" type="button" title="Restart this deterministic seed from tick zero.">Replay seed</button>
+      <button id="restart-button" type="button" title="Start a deterministic new seed.">New seed</button>
       <label class="speed-control" for="speed-select">Pace
         <select id="speed-select" aria-label="Simulation tick speed">
           <option value="950">Deliberate</option>
@@ -1605,6 +1606,7 @@
       const STATE_SCHEMA = "dogg-heist-state-v1";
       const FRAME_SCHEMA = "dogg-frame-v1";
       const STORAGE_KEY = "dogg-heist-save-v1";
+      const WRITER_LOCK = "dogg-heist-writer-v1";
       const GRID_W = 18;
       const GRID_H = 12;
       const REQUIRED_TERMINALS = 2;
@@ -1641,6 +1643,7 @@
         appShell: document.querySelector(".app-shell"),
         play: document.getElementById("play-toggle"),
         step: document.getElementById("step-button"),
+        replay: document.getElementById("replay-button"),
         restart: document.getElementById("restart-button"),
         speed: document.getElementById("speed-select"),
         timeline: document.getElementById("timeline"),
@@ -1697,12 +1700,20 @@
       let speedMs = 650;
       let running = false;
       let timerId = null;
+      let lastClockMs = 0;
+      let accumulatedMs = 0;
       let ready = false;
       let storageAvailable = false;
-      let storageFailureShown = false;
+      let writerLockHeld = false;
+      let lockDecisionMade = false;
+      let writerLockRelease = null;
+      let authorityStale = false;
+      let staleReason = "";
+      let lastDurableRaw = null;
+      let durableHeadHash = null;
       let introTimer = null;
       let userCommanded = false;
-      let resumeAfterIntro = true;
+      let resumeAfterIntro = false;
       let keyboardCursor = { x: 2, y: 9 };
       let palette = {};
       let lastTickPaint = 0;
@@ -2839,6 +2850,11 @@
       }
 
       function advanceOneTick(options = {}) {
+        if (!ensureWritable("Tick")) {
+          running = false;
+          stopTimer();
+          return false;
+        }
         if (!liveState || liveState.outcome !== "active") {
           stopTimer();
           return false;
@@ -2847,7 +2863,7 @@
         sealFrame("tick", events);
         if (liveState.outcome !== "active") stopTimer();
         if (options.paint !== false) renderAll();
-        if (options.persist !== false) persistState();
+        if (options.persist !== false && !persistState()) return false;
         return true;
       }
 
@@ -3309,6 +3325,7 @@
 
       function renderStatus(state, frame) {
         const history = isViewingHistory();
+        const writable = canWrite();
         elements.tick.textContent = history ? state.tick + " / live " + liveState.tick : String(state.tick);
         elements.branch.textContent = history ? frame.branchId + " · viewing" : liveState.branchId;
         elements.branch.title = history ? "Viewed branch " + frame.branchId + "; live branch " + liveState.branchId : liveState.branchId;
@@ -3319,8 +3336,10 @@
         elements.objective.textContent = objectiveSummary(state);
         elements.objective.dataset.outcome = state.outcome;
         elements.seed.textContent = liveState.seed;
-        elements.viewMode.textContent = history ? "Inspecting history" : running ? "Live · running" : "Live · paused";
-        elements.viewMode.className = "mode-pill " + (history ? "history" : "live");
+        elements.viewMode.textContent = authorityStale ? "Stale · reload required"
+          : !writable ? "Verified · read-only"
+          : history ? "Inspecting history" : running ? "Live · running" : "Live · paused";
+        elements.viewMode.className = "mode-pill " + (history || authorityStale || !writable ? "history" : "live");
         elements.timeline.max = String(frames.length - 1);
         elements.timeline.value = String(viewIndex);
         elements.timeline.setAttribute("aria-valuetext", "Frame " + (viewIndex + 1) + " of " + frames.length + ", tick " + state.tick + (history ? ", historical" : ", live"));
@@ -3329,12 +3348,17 @@
           ? "Live head remains " + headFrame().hash.slice(0, 12) + "… Fork or return live."
           : "Head " + frame.hash.slice(0, 12) + "… · parent " + frame.parentHash.slice(0, 12) + "…";
         elements.live.disabled = !history;
-        elements.fork.disabled = !history;
+        elements.fork.disabled = !history || !writable;
         elements.frameCount.textContent = frames.length + (frames.length === 1 ? " frame" : " frames");
         elements.play.textContent = running ? "❚❚ Pause" : "▶ Play";
         elements.play.setAttribute("aria-pressed", String(running));
-        elements.step.disabled = running || history || liveState.outcome !== "active";
-        elements.play.disabled = history || liveState.outcome !== "active";
+        elements.step.disabled = !writable || running || history || liveState.outcome !== "active";
+        elements.play.disabled = !writable || history || liveState.outcome !== "active";
+        elements.replay.disabled = !writable;
+        elements.restart.disabled = !writable;
+        elements.speed.disabled = !writable;
+        elements.import.disabled = !writable;
+        elements.board.setAttribute("aria-disabled", String(!writable || history));
       }
 
       function renderMission(state) {
@@ -3432,9 +3456,34 @@
       function startTimer() {
         stopTimer();
         if (!running || liveState.outcome !== "active" || isViewingHistory()) return;
-        timerId = window.setInterval(() => {
-          if (!advanceOneTick()) stopTimer();
-        }, speedMs);
+        lastClockMs = performance.now();
+        accumulatedMs = 0;
+        timerId = window.setInterval(runClock, Math.min(250, Math.max(50, speedMs)));
+      }
+
+      function runClock() {
+        if (!running || liveState.outcome !== "active" || isViewingHistory()) {
+          stopTimer();
+          return;
+        }
+        const now = performance.now();
+        const elapsed = Math.max(0, now - lastClockMs);
+        lastClockMs = now;
+        accumulatedMs = Math.min(accumulatedMs + elapsed, speedMs * 32);
+        const due = Math.min(32, Math.floor(accumulatedMs / speedMs));
+        if (!due) return;
+        let advanced = 0;
+        for (; advanced < due; advanced += 1) {
+          if (!advanceOneTick({ paint: false, persist: false })) break;
+        }
+        accumulatedMs = Math.max(0, accumulatedMs - advanced * speedMs);
+        renderAll();
+        if (!persistState()) {
+          running = false;
+          stopTimer();
+          return;
+        }
+        if (liveState.outcome !== "active") stopTimer();
       }
 
       function stopTimer() {
@@ -3442,6 +3491,8 @@
           window.clearInterval(timerId);
           timerId = null;
         }
+        lastClockMs = 0;
+        accumulatedMs = 0;
         if (liveState && liveState.outcome !== "active") running = false;
       }
 
@@ -3565,6 +3616,7 @@
 
       function playGame(markCommand = true) {
         if (markCommand) userCommanded = true;
+        if (!ensureWritable("Play")) return false;
         if (isViewingHistory()) {
           toast("History is read-only. Fork this frame or return to the live head.", "error");
           return false;
@@ -3584,7 +3636,7 @@
         running = true;
         startTimer();
         renderAll();
-        persistState();
+        if (!persistState()) return false;
         completeReadiness();
         if (releasedIntro) focusUsefulControlAfterIntro();
         status("Live policy clock running at " + speedMs + " ms per tick.");
@@ -3593,11 +3645,12 @@
 
       function pauseGame(markCommand = true) {
         if (markCommand) userCommanded = true;
+        if (running) runClock();
         running = false;
         stopTimer();
         if (markCommand) dismissIntro(false);
         renderAll();
-        persistState();
+        if (canWrite() && !persistState()) return false;
         status("Simulation paused. The live head is unchanged.");
         return true;
       }
@@ -3609,6 +3662,7 @@
 
       function stepGame(count = 1) {
         userCommanded = true;
+        if (!ensureWritable("Step")) return publicState();
         dismissIntro(false);
         if (isViewingHistory()) {
           toast("Fork or return live before advancing a historical frame.", "error");
@@ -3623,7 +3677,7 @@
           advanced += 1;
         }
         renderAll();
-        persistState();
+        if (!persistState()) return publicState();
         status("Advanced " + advanced + (advanced === 1 ? " deterministic tick." : " deterministic ticks."));
         return publicState();
       }
@@ -3635,6 +3689,7 @@
 
       function restartGame(seed, options = {}) {
         userCommanded = true;
+        if (!ensureWritable("Restart")) return publicState();
         dismissIntro(false);
         const shouldResume = options.resume ?? running;
         running = false;
@@ -3645,10 +3700,12 @@
         viewIndex = 0;
         keyboardCursor = { x: 2, y: 9 };
         sealFrame("genesis", liveState.lastEvents);
-        if (shouldResume) playGame(false);
+        if (shouldResume) {
+          if (!playGame(false)) return publicState();
+        }
         else {
           renderAll();
-          persistState();
+          if (!persistState()) return publicState();
         }
         toast("Fresh deterministic facility sealed: " + liveState.seed, "success");
         return publicState();
@@ -3662,11 +3719,12 @@
           toast("Timeline index must be a number.", "error");
           return false;
         }
+        if (running) runClock();
         running = false;
         stopTimer();
         viewIndex = Math.max(0, Math.min(frames.length - 1, parsed));
         renderAll();
-        persistState();
+        if (canWrite() && !persistState()) return false;
         status(isViewingHistory() ? "Inspecting an immutable prior frame. Live head preserved." : "Returned to the live head.");
         return true;
       }
@@ -3677,6 +3735,7 @@
 
       function forkTimeline() {
         userCommanded = true;
+        if (!ensureWritable("Fork")) return false;
         dismissIntro(false);
         if (!isViewingHistory()) {
           toast("Choose a prior frame before forking.", "error");
@@ -3696,13 +3755,14 @@
         liveState.lastEvents = events.slice();
         sealFrame("fork", events);
         renderAll();
-        persistState();
+        if (!persistState()) return false;
         toast("New branch " + liveState.branchId + " sealed from tick " + liveState.tick + ".", "success");
         return true;
       }
 
       function queueDirective(agentId, x, y) {
         userCommanded = true;
+        if (!ensureWritable("Directive")) return false;
         dismissIntro(false);
         if (isViewingHistory()) {
           toast("Historical frames cannot accept directives. Fork or return live.", "error");
@@ -3739,7 +3799,7 @@
         sealFrame("directive", events);
         keyboardCursor = { x: targetX, y: targetY };
         renderAll();
-        persistState();
+        if (!persistState()) return false;
         toast(ROLE[agent.id].name + " accepted waypoint [" + targetX + "," + targetY + "].", "success");
         return true;
       }
@@ -3752,7 +3812,7 @@
         keyboardCursor = { x: agent.x, y: agent.y };
         renderAll();
         updateBoardAccessibility(state, computeNextDanger(state), true);
-        persistState();
+        if (canWrite() && !persistState()) return false;
         status(ROLE[agentId].name + " selected. Tap a floor tile to queue one waypoint.");
         return true;
       }
@@ -4110,7 +4170,7 @@
         try {
           payload = JSON.parse(text);
         } catch (error) {
-          throw new Error("JSON could not be parsed: " + error.message);
+          throw new Error("JSON could not be parsed.");
         }
         requireRecord(payload, "Import");
         if (payload.format !== FORMAT || payload.version !== APP_VERSION || !payload.data) {
@@ -4240,6 +4300,7 @@
       }
 
       function importState(json, options = {}) {
+        if (!ensureWritable("Import")) return false;
         let data;
         try {
           data = validateImport(json);
@@ -4257,7 +4318,7 @@
           installImportedRuntime(prepared, { ...options, deferTimer: true, skipPersist: true });
           if (!options.keepIntro && !elements.intro.hidden) dismissIntro(false);
           if (running && !isViewingHistory() && liveState.outcome === "active") startTimer();
-          if (!options.skipPersist) persistState();
+          if (!options.skipPersist && !persistState()) return false;
         } catch (error) {
           try {
             restoreRuntimeSnapshot(snapshot);
@@ -4276,16 +4337,18 @@
       }
 
       function setSpeed(value) {
+        if (!ensureWritable("Clock change")) return false;
         const parsed = Math.round(Number(value));
         if (!Number.isFinite(parsed) || parsed < MIN_SPEED || parsed > MAX_SPEED) {
           toast("Tick speed must be between " + MIN_SPEED + " and " + MAX_SPEED + " ms.", "error");
           return false;
         }
+        if (running) runClock();
         speedMs = parsed;
         const matchingOption = Array.from(elements.speed.options).find((option) => Number(option.value) === speedMs);
         if (matchingOption) elements.speed.value = String(speedMs);
         if (running) startTimer();
-        persistState();
+        if (!persistState()) return false;
         status("Clock set to " + speedMs + " ms per deterministic tick.");
         return true;
       }
@@ -4379,8 +4442,68 @@
             agentsPresent: displayed.agents.filter((agent) => isAtExtraction(displayed, agent)).map((agent) => agent.id)
           },
           storageAvailable,
+          writeAccess: canWrite(),
+          lockDecisionMade,
+          writerLockHeld,
+          authorityStale,
+          staleReason,
+          durableHeadHash,
           ready
         };
+      }
+
+      function canWrite() {
+        return storageAvailable && writerLockHeld && lockDecisionMade && !authorityStale;
+      }
+
+      function updateAuthorityAccessUI() {
+        const writable = canWrite();
+        elements.storageLine.classList.toggle("offline", !writable);
+        if (authorityStale) {
+          elements.storageValue.textContent = "STALE AUTHORITY · reload required";
+        } else if (!storageAvailable) {
+          elements.storageValue.textContent = "Storage denied · read-only";
+        } else if (!lockDecisionMade) {
+          elements.storageValue.textContent = "Acquiring cross-tab writer lock";
+        } else if (writerLockHeld) {
+          elements.storageValue.textContent = "Cross-tab writer lock held";
+        } else if (staleReason) {
+          elements.storageValue.textContent = staleReason + " · read-only";
+        } else {
+          elements.storageValue.textContent = "Another tab owns writes · read-only";
+        }
+      }
+
+      function restoreLastDurableAuthority() {
+        if (!lastDurableRaw) return;
+        try {
+          const data = validateImport(lastDurableRaw);
+          applyImportedData(data, { forcePaused: true, skipPersist: true });
+        } catch (error) {
+          console.error("DOGG durable rollback failed:", error);
+        }
+      }
+
+      function markAuthorityStale(reason, rollback = true) {
+        if (rollback) restoreLastDurableAuthority();
+        authorityStale = true;
+        staleReason = reason;
+        running = false;
+        stopTimer();
+        updateAuthorityAccessUI();
+        renderAll();
+        status("Authority stale: " + reason + " Reload this tab before issuing commands.", "error");
+      }
+
+      function ensureWritable(action) {
+        if (canWrite()) return true;
+        const reason = authorityStale ? "this authority is stale; reload required"
+          : !storageAvailable ? "durable storage is unavailable"
+          : !lockDecisionMade ? "the cross-tab writer lock is not ready"
+          : staleReason ? staleReason.toLowerCase()
+          : "another tab owns the writer lock";
+        status(action + " refused: " + reason + ".", "error");
+        return false;
       }
 
       function probeStorage() {
@@ -4392,24 +4515,30 @@
           storageAvailable = false;
           console.warn("DOGG persistence unavailable:", error);
         }
-        elements.storageLine.classList.toggle("offline", !storageAvailable);
-        elements.storageValue.textContent = storageAvailable ? "Local chain persistence on" : "Storage denied · export still works";
+        updateAuthorityAccessUI();
       }
 
       function persistState() {
-        if (!storageAvailable || !liveState || !frames.length) return false;
+        if (!canWrite() || !liveState || !frames.length) return false;
         try {
-          localStorage.setItem(STORAGE_KEY, exportState());
+          const current = localStorage.getItem(STORAGE_KEY);
+          let currentHead = null;
+          if (current && durableHeadHash !== null) {
+            currentHead = validateImport(current).frames.at(-1).hash;
+          }
+          if (current !== lastDurableRaw || currentHead !== durableHeadHash) {
+            markAuthorityStale("durable compare-and-swap failed; another authority changed the record");
+            return false;
+          }
+          const next = exportState();
+          localStorage.setItem(STORAGE_KEY, next);
+          lastDurableRaw = next;
+          durableHeadHash = headFrame().hash;
+          updateAuthorityAccessUI();
           return true;
         } catch (error) {
-          storageAvailable = false;
-          elements.storageLine.classList.add("offline");
-          elements.storageValue.textContent = "Persistence stopped · export still works";
           console.error("DOGG persistence failed:", error);
-          if (!storageFailureShown) {
-            storageFailureShown = true;
-            toast("Browser storage failed: " + error.message + ". Use Export to preserve this chain.", "error");
-          }
+          markAuthorityStale("persistence failed: " + error.message);
           return false;
         }
       }
@@ -4425,22 +4554,93 @@
           return false;
         }
         if (!saved) return false;
+        lastDurableRaw = saved;
         try {
           const data = validateImport(saved);
-          resumeAfterIntro = data.running && data.viewIndex === data.frames.length - 1;
+          durableHeadHash = data.frames.at(-1).hash;
+          resumeAfterIntro = false;
           applyImportedData(data, { forcePaused: true, skipPersist: true });
-          status("Verified saved chain. The operation will resume after the briefing.", "success");
+          status("Verified saved chain. Press Play to resume.", "success");
           return true;
         } catch (error) {
           console.error("Saved DOGG chain rejected:", error);
           status("Saved operation rejected: " + error.message + ". Starting fresh.", "error");
-          try {
-            localStorage.removeItem(STORAGE_KEY);
-          } catch (removeError) {
-            console.error("Could not remove corrupt saved DOGG chain:", removeError);
-          }
+          durableHeadHash = null;
           return false;
         }
+      }
+
+      function adoptExternalRecord(raw) {
+        if (authorityStale || raw === lastDurableRaw) return;
+        if (!raw) {
+          markAuthorityStale("the durable record was removed by another context", false);
+          return;
+        }
+        let data;
+        try {
+          data = validateImport(raw);
+        } catch (error) {
+          markAuthorityStale("another context wrote an invalid record: " + error.message, false);
+          return;
+        }
+        if (writerLockHeld) {
+          markAuthorityStale("the durable record changed outside the held writer lock");
+          return;
+        }
+        applyImportedData(data, { forcePaused: true, skipPersist: true });
+        lastDurableRaw = raw;
+        durableHeadHash = data.frames.at(-1).hash;
+        running = false;
+        updateAuthorityAccessUI();
+        renderAll();
+        status("Read-only authority synchronized to durable head " + durableHeadHash.slice(0, 12) + "…", "success");
+      }
+
+      function beginWriterLease() {
+        if (!storageAvailable) {
+          lockDecisionMade = true;
+          updateAuthorityAccessUI();
+          renderAll();
+          return;
+        }
+        if (!navigator.locks || typeof navigator.locks.request !== "function") {
+          lockDecisionMade = true;
+          staleReason = "Web Locks unavailable";
+          updateAuthorityAccessUI();
+          renderAll();
+          status("Web Locks unavailable. This authority is read-only.", "error");
+          return;
+        }
+        navigator.locks.request(WRITER_LOCK, { mode: "exclusive", ifAvailable: true }, async (lock) => {
+          lockDecisionMade = true;
+          if (!lock) {
+            writerLockHeld = false;
+            updateAuthorityAccessUI();
+            adoptExternalRecord(localStorage.getItem(STORAGE_KEY));
+            renderAll();
+            status("Another tab owns the DOGG writer lock. This authority is read-only.", "neutral");
+            return;
+          }
+          writerLockHeld = true;
+          updateAuthorityAccessUI();
+          const current = localStorage.getItem(STORAGE_KEY);
+          if (current !== lastDurableRaw) {
+            markAuthorityStale("durable state changed while acquiring the writer lock");
+          } else if (persistState()) {
+            status("Writer lock acquired. Durable mutations are compare-and-swap protected.", "success");
+          }
+          renderAll();
+          await new Promise((resolve) => { writerLockRelease = resolve; });
+          writerLockHeld = false;
+          writerLockRelease = null;
+        }).catch((error) => {
+          lockDecisionMade = true;
+          writerLockHeld = false;
+          staleReason = "Web Lock request failed: " + error.message;
+          updateAuthorityAccessUI();
+          renderAll();
+          status(staleReason + ". This authority is read-only.", "error");
+        });
       }
 
       function downloadExport() {
@@ -4569,6 +4769,7 @@
           selectAgent(AGENT_ORDER[Number(key) - 1]);
         } else if (key === "r") {
           event.preventDefault();
+          if (!ensureWritable("Restart")) return;
           restartGame(event.shiftKey ? deriveNewSeed() : liveState.seed, { resume: running });
         } else if (key === "f") {
           event.preventDefault();
@@ -4582,6 +4783,7 @@
       function wireEvents() {
         elements.play.addEventListener("click", togglePlay);
         elements.step.addEventListener("click", () => stepGame(1));
+        elements.replay.addEventListener("click", () => restartGame(liveState.seed, { resume: running }));
         elements.restart.addEventListener("click", () => restartGame(deriveNewSeed(), { resume: running }));
         elements.speed.addEventListener("change", () => setSpeed(Number(elements.speed.value)));
         elements.timeline.addEventListener("input", () => scrubTimeline(Number(elements.timeline.value)));
@@ -4620,6 +4822,14 @@
           dismissIntro(true);
         });
         window.addEventListener("keydown", handleGlobalKey);
+        window.addEventListener("storage", (event) => {
+          if (event.key === STORAGE_KEY) adoptExternalRecord(event.newValue);
+        });
+        window.addEventListener("pagehide", () => {
+          running = false;
+          stopTimer();
+          if (writerLockRelease) writerLockRelease();
+        });
         document.addEventListener("keydown", handleIntroKeydown, true);
         window.addEventListener("resize", renderAll);
 
@@ -4648,7 +4858,8 @@
         scrub: scrubTimeline,
         fork: forkTimeline,
         exportState,
-        importState,
+        importState: (json) => importState(json),
+        validateExport: (json) => clone(validateImport(json)),
         queueDirective,
         verifyChain: () => verifyChain(false),
         setSpeed
@@ -4662,17 +4873,17 @@
           liveState = createInitialState(DEFAULT_SEED);
           frames = [];
           sealFrame("genesis", liveState.lastEvents);
-          resumeAfterIntro = true;
+          resumeAfterIntro = false;
         }
         wireEvents();
         activateIntroModal();
         renderAll();
-        status(restored ? "Saved chain verified. Briefing before resumption." : "Genesis verified. Autonomous launch in a moment.", "success");
+        beginWriterLease();
+        status(restored ? "Saved chain verified. Press Play to resume." : "Genesis verified. Press Play when ready.", "success");
         introTimer = window.setTimeout(() => {
           introTimer = null;
-          if (!userCommanded) dismissIntro(resumeAfterIntro);
+          if (!userCommanded) dismissIntro(false);
         }, 2800);
-        persistState();
       }
 
       try {
