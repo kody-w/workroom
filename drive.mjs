@@ -28,7 +28,12 @@ await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4
 const frames = () => page.evaluate(() => JSON.parse(localStorage.getItem('workroom.frames') || '[]'));
 const status = () => page.textContent('#status');
 
-say('genesis frames', String((await frames()).length));
+// A fresh browser now opens on a worked example rather than on nothing, so start from
+// the user's OWN empty record — otherwise every count below measures the seed.
+page.on('dialog', d => d.accept());
+await page.click('#reset');
+await page.waitForTimeout(400);
+say('after reset, frames', String((await frames()).length));
 
 // add three cards across two lanes
 const add = async (laneIdx, text) => {
@@ -46,7 +51,9 @@ await page.locator('.lane').nth(1).locator('.card').first().locator('button', { 
 await page.waitForTimeout(60);
 // edit() asks three prompts in a row, so one queued handler answers them all —
 // two `once` handlers both fire on the FIRST dialog and the second then throws
+// a handler is already attached above; give it the answers to hand out
 const answers = ['Cut the nexus tour (final)', 're-shot against cc26380', 'KW'];
+page.removeAllListeners('dialog');
 page.on('dialog', d => d.accept(answers.length ? answers.shift() : ''));
 const first = page.locator('.lane').nth(0).locator('.card').first();
 await first.locator('button', { hasText: 'edit' }).click();

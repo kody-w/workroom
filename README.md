@@ -10,6 +10,26 @@ than a log written beside it.
 
 Open `index.html`. There is no server, no build, no dependency.
 
+## It opens on work already in progress
+
+A blank board explains nothing, so a fresh browser opens on a worked example —
+a week mid-flight, with **people and agents both writing to the same record**.
+An author whose name starts with `@` is an agent; the board and the ledger show
+the difference, because "an AI did this" is worth being able to see at a glance.
+
+Three examples ship, and you can flip between them from the header while you
+work: shipping a demo, an incident at hour two, and a customer week. Press
+**agents idle** to let the agents carry on while you watch — every move they
+make is an ordinary append, verified and chained exactly like anything you type.
+
+None of it is mocked. The app verifies every frame it loads, so a fake seed
+would be refused by its own front door: `build-seeds.mjs` pulls the hash
+primitives out of the shipped `index.html` and mints each example as a real
+chain. Each is its own stream, so switching between them is not a rollback of
+anything.
+
+    node build-seeds.mjs      # regenerate and re-inject them
+
 ## Why the frames are real
 
 Claiming rapp/1 is easy; the hashes have to agree with the reference or the
