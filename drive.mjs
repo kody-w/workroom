@@ -84,6 +84,76 @@ await page.waitForTimeout(500);
 const tampered = (await status()).replace(/\s+/g, ' ').trim();
 say('tampered chain is caught', /problem|does not match/i.test(tampered) ? 'yes — ' + tampered.slice(0, 52) : 'NO — it accepted it');
 
+/* ── the failures the app has to SURVIVE, not merely pass ───────────────── */
+
+// a full or blocked store must refuse the change, not pretend to keep it
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+const diskBefore = (await frames()).length;
+await page.evaluate(() => { localStorage.setItem = () => { throw new Error('QuotaExceededError'); }; });
+await add(0, 'this must not be silently dropped');
+await page.waitForTimeout(200);
+const diskAfter = (await page.evaluate(() => JSON.parse(localStorage.getItem('workroom.frames') || '[]'))).length;
+const memAfter = await page.evaluate(() => document.querySelectorAll('.card').length);
+const warned = /could not be written|refused/i.test(await status());
+say('dead store: disk unchanged', String(diskAfter === diskBefore));
+say('dead store: change refused, not kept', String(memAfter === 2));
+say('dead store: says so, stickily', String(warned));
+
+// an import that cannot even be canonicalized must leave the live chain alone
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+const liveBefore = JSON.stringify(await frames());
+const poison = JSON.stringify({
+  stream_id: 'rappid:@evil/x:' + 'a'.repeat(64) + ':' + 'b'.repeat(16),
+  frames: [{ spec: 'rapp/1', kind: 'memory.save', stream_id: 'rappid:@evil/x:' + 'a'.repeat(64) + ':' + 'b'.repeat(16),
+             seq: 0, utc: '2026-08-29T00:00:00.000Z', payload: { event: 'room.opened', ratio: 1.5 },
+             payload_hash: 'c'.repeat(64), frame_hash: 'd'.repeat(64), prev: null, prev_wave: null, sig: null }],
+});
+await page.click('#import');
+await page.fill('#io-text', poison);
+await page.click('#io-ok');
+await page.waitForTimeout(400);
+const liveAfter = JSON.stringify(await frames());
+say('poison import: chain untouched', String(liveBefore === liveAfter));
+say('poison import: refused out loud', /refused/i.test(await status()) ? 'yes' : 'NO — it said nothing');
+
+// ...and one more edit must still write the USER's chain, not the attacker's
+await page.evaluate(() => document.getElementById('io').close());
+await add(0, 'still mine');
+await page.waitForTimeout(200);
+const afterEdit = await frames();
+say('poison import: next edit is still mine',
+    String(afterEdit.every(f => f.stream_id.startsWith('rappid:@kody-w/workroom:'))));
+
+// a frame naming a lane that does not exist must be refused, not bricked in
+const badLane = JSON.stringify({ stream_id: 'rappid:@kody-w/workroom:' + 'a'.repeat(64) + ':' + 'b'.repeat(16), frames: [] });
+await page.click('#import'); await page.fill('#io-text', badLane); await page.click('#io-ok');
+await page.waitForTimeout(300);
+say('empty import handled', /refused|imported 0/i.test(await status()) ? 'yes' : 'NO');
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// an unpaired surrogate is outside the I-JSON domain (§4). The canonicalizer must
+// refuse it rather than escape it — an escaped lone surrogate hashes to something
+// the reference implementation can never reproduce, so the frame would verify here
+// and nowhere else.
+const liveBeforeSur = JSON.stringify(await frames());
+const sid = 'rappid:@kody-w/workroom:' + 'a'.repeat(64) + ':' + 'b'.repeat(16);
+const surrogatePayload = JSON.stringify({
+  stream_id: sid,
+  frames: [{ spec: 'rapp/1', kind: 'memory.save', stream_id: sid, seq: 0,
+             utc: '2026-08-29T00:00:00.000Z',
+             payload: { event: 'room.opened', title: 'lone \ud800 here' },
+             payload_hash: 'c'.repeat(64), frame_hash: 'd'.repeat(64),
+             prev: null, prev_wave: null, sig: null }],
+});
+await page.click('#import'); await page.fill('#io-text', surrogatePayload); await page.click('#io-ok');
+await page.waitForTimeout(400);
+const surStatus = await status();
+say('unpaired surrogate refused', /surrogate|refused/i.test(surStatus) ? 'yes' : 'NO — it accepted it');
+say('surrogate import: chain untouched', String(JSON.stringify(await frames()) === liveBeforeSur));
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
 await page.screenshot({ path: join(here, 'shot.png'), fullPage: false });
 await browser.close();
 

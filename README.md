@@ -42,10 +42,18 @@ Conformance, SPEC.md rev-6:
 node drive.mjs        # needs playwright; node_modules is symlinked from ~/nexus-tour
 ```
 
-drives a real browser: adds work, moves it, edits it, removes it, verifies the
-chain, rebuilds the board from the frames, then **tampers with a stored frame
-and checks the app refuses it** — a ledger that cannot detect tampering is a
-log. `shot.png` is that last state: the ledger shows the altered frame and the
+drives a real browser through the whole flow and then through the failures that
+matter, because those are what a record has to survive:
+
+| | |
+|---|---|
+| tampering | a stored frame is altered — both hashes are reported |
+| a dead store | `setItem` throws; the change is **refused**, not kept in memory and lost on reload, and the warning is sticky |
+| a poison import | frames that cannot be canonicalized at all — the live chain is untouched and the next edit is still yours |
+| an unpaired surrogate | outside the I-JSON domain (§4), refused rather than escaped into a hash the reference cannot reproduce |
+| a lane that does not exist | refused at import instead of bricking the board on every future load |
+
+`shot.png` is the tampered state: the ledger shows the altered frame and the
 status bar names it.
 
 ## Import / export

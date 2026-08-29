@@ -162,15 +162,33 @@ function canonical(v) {
     if (!Number.isSafeInteger(v)) throw new Error('int outside the interoperable range; carry it as a string');
     return JSON.stringify(v);
   }
-  if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'string') return wellFormed(v);
   if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
   if (typeof v === 'object') {
     // RFC 8785 orders member names by UTF-16 code units, which is exactly what
     // JavaScript's default string sort does — the one place JS gets JCS for free.
     const keys = Object.keys(v).sort();
-    return '{' + keys.map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}';
+    return '{' + keys.map(k => wellFormed(k) + ':' + canonical(v[k])).join(',') + '}';
   }
   throw new Error('non-I-JSON value: ' + typeof v);
+}
+// §4 refuses an unpaired surrogate rather than repairing it. JS would happily
+// escape a lone \uD800 and hash the result, but the reference implementation
+// emits the raw character — so the two would disagree on a string no human
+// typed and the frame would be unverifiable anywhere else. Refusing is the only
+// answer that keeps the hash meaningful.
+function wellFormed(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xD800 && c <= 0xDBFF) {
+      const n = s.charCodeAt(i + 1);
+      if (!(n >= 0xDC00 && n <= 0xDFFF)) throw new Error('unpaired surrogate — outside the I-JSON domain');
+      i++;
+    } else if (c >= 0xDC00 && c <= 0xDFFF) {
+      throw new Error('unpaired surrogate — outside the I-JSON domain');
+    }
+  }
+  return JSON.stringify(s);
 }
 
 /* ── §5 domain-separated content addressing ──────────────────────────────── */
@@ -229,8 +247,11 @@ let selected = null;
 
 const $ = id => document.getElementById(id);
 const load = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
-const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {
-  setStatus('could not write to localStorage — the chain is not being saved', 'bad'); } };
+// Returns whether the write actually landed. It used to swallow the failure and
+// set a status line that the caller overwrote in the same microtask, so a full
+// quota or a private window silently dropped every frame while the app went on
+// reporting "verified" over an in-memory chain that was not on disk.
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
 
 /* ── the projection: the board is replayed, never edited in place ────────── */
 function project(list) {
@@ -240,11 +261,15 @@ function project(list) {
     const p = f.payload, id = p.card;
     switch (p.event) {
       case 'card.added':
+        // a lane outside the four would throw here and, once the frames were on
+        // disk, would throw again on every load — a board bricked by one import
+        if (!b.order[p.lane]) break;
         b.cards[id] = { id, title: p.title, note: p.note || '', who: p.who || '', lane: p.lane };
         b.order[p.lane].push(id);
         break;
       case 'card.moved': {
         const c = b.cards[id]; if (!c) break;
+        if (!b.order[p.lane]) break;
         b.order[c.lane] = b.order[c.lane].filter(x => x !== id);
         c.lane = p.lane;
         const to = b.order[p.lane];
@@ -275,35 +300,80 @@ async function append(payload) {
   const prevFrame = frames[frames.length - 1] || null;
   const f = await buildFrame(streamId, frames.length, payload, prevFrame ? prevFrame.payload_hash : null);
   frames.push(f);
-  save(LS.frames, frames);
+  if (!save(LS.frames, frames)) {
+    // The frame did not reach disk. Keeping it in memory would chain every later
+    // frame onto a predecessor that does not exist, and the whole tail would
+    // vanish on reload while the app said it was fine. Refuse the change instead.
+    frames.pop();
+    stick('the chain could not be written to storage — that change was refused, not saved. '
+        + 'Export now: this browser is out of room, or site data is blocked here.');
+    render();
+    return null;
+  }
   board = project(frames);
   render();
   return f;
 }
 
 /* ── verification (§7.5, the parts a local reader can check) ─────────────── */
-async function verifyChain() {
-  const problems = [];
-  let prev = null;
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-    const keys = Object.keys(f).sort().join(',');
-    const want = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
-    if (keys !== want) { problems.push(`frame ${i}: key set is not the eleven`); continue; }
-    if (f.spec !== SPEC) problems.push(`frame ${i}: spec is not ${SPEC}`);
-    if (f.seq !== i) problems.push(`frame ${i}: seq is ${f.seq}, expected ${i}`);
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(f.utc)) problems.push(`frame ${i}: utc is not the fixed 24-byte form`);
-    if (f.prev_wave !== null) problems.push(`frame ${i}: prev_wave must be null on a memory stream`);
-    if (i === 0 && f.prev !== null) problems.push('genesis: prev must be null');
-    if (i > 0 && f.prev !== prev.payload_hash) problems.push(`frame ${i}: prev does not link to frame ${i - 1}`);
+// Takes the frames it is asked about rather than reading a global, and NEVER
+// throws: a chain that cannot be canonicalized is exactly the chain a verifier
+// most needs to report on, and an escaping rejection used to leave the app
+// showing a clean status bar over an unverifiable record.
+const KEYS_11 = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
+const LANE_IDS = LANES.map(l => l.id);
 
-    const ph = await H('rapp/1:particle', f.payload);
-    if (ph !== f.payload_hash) problems.push(`frame ${i}: payload_hash does not match the payload`);
-    const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
-    const fh = await H('rapp/1:wave', pre);
-    if (fh !== f.frame_hash) problems.push(`frame ${i}: frame_hash does not match the frame`);
-    prev = f;
+function utcIsReal(u) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u)) return false;
+  const d = new Date(u);                       // catches 2026-02-31 and friends
+  return !isNaN(d.getTime()) && d.toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z') === u;
+}
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+async function verifyChain(list, expectStream) {
+  const problems = [];
+  const seen = new Set();
+  let prev = null;
+  if (!Array.isArray(list)) return ['that is not a chain'];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    try {
+      if (!isPlainObject(f)) { problems.push(`frame ${i}: not an object`); continue; }
+      if (Object.keys(f).sort().join(',') !== KEYS_11) { problems.push(`frame ${i}: key set is not the eleven`); continue; }
+      if (f.spec !== SPEC) problems.push(`frame ${i}: spec is not ${SPEC}`);
+      if (f.kind !== KIND) problems.push(`frame ${i}: kind is ${JSON.stringify(f.kind)}, not the registered ${KIND}`);
+      if (typeof f.stream_id !== 'string' || !f.stream_id) problems.push(`frame ${i}: stream_id is not a string`);
+      if (!isPlainObject(f.payload)) problems.push(`frame ${i}: payload must be a JSON object`);
+      if (!Number.isSafeInteger(f.seq) || f.seq < 0) problems.push(`frame ${i}: seq is not a uint53`);
+      else if (f.seq !== i) problems.push(`frame ${i}: seq is ${f.seq}, expected ${i}`);
+      if (!utcIsReal(f.utc)) problems.push(`frame ${i}: utc is not a real time in the fixed 24-byte form`);
+      if (f.sig !== null) problems.push(`frame ${i}: sig must be null — this app does not sign`);
+      if (f.prev_wave !== null) problems.push(`frame ${i}: prev_wave must be null on a memory stream`);
+      if (i === 0 && f.prev !== null) problems.push('genesis: prev must be null');
+      if (i > 0 && prev && f.prev !== prev.payload_hash) problems.push(`frame ${i}: prev does not link to frame ${i - 1}`);
+
+      // every frame must belong to ONE stream, and to the stream it is filed under
+      seen.add(f.stream_id);
+      if (expectStream && f.stream_id !== expectStream) problems.push(`frame ${i}: belongs to a different stream`);
+
+      // a payload the board cannot replay is a payload that will brick the board
+      const p = f.payload;
+      if (isPlainObject(p) && (p.event === 'card.added' || p.event === 'card.moved')
+          && !LANE_IDS.includes(p.lane)) problems.push(`frame ${i}: names a lane that does not exist`);
+
+      const ph = await H('rapp/1:particle', f.payload);
+      if (ph !== f.payload_hash) problems.push(`frame ${i}: payload_hash does not match the payload`);
+      const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
+      const fh = await H('rapp/1:wave', pre);
+      if (fh !== f.frame_hash) problems.push(`frame ${i}: frame_hash does not match the frame`);
+      prev = f;
+    } catch (e) {
+      problems.push(`frame ${i}: refused — ${e.message}`);
+    }
   }
+  if (seen.size > 1) problems.push(`the frames come from ${seen.size} different streams`);
   return problems;
 }
 
@@ -435,7 +505,11 @@ function renderAbout() {
   p.append(note, kv);
 }
 
-let statusMsg = null, statusCls = '';
+let statusMsg = null, statusCls = '', sticky = null;
+// Some failures must not be overwritable by the next cheerful "added". A sticky
+// message stays until the condition that caused it is gone.
+function stick(msg) { sticky = msg; render(); }
+function unstick() { sticky = null; }
 function setStatus(msg, cls) {
   if (msg !== undefined) { statusMsg = msg; statusCls = cls || ''; }
   const head = frames[frames.length - 1];
@@ -446,6 +520,10 @@ function setStatus(msg, cls) {
   el.append(a);
   if (statusMsg) {
     const s = document.createElement('div'); s.className = statusCls; s.textContent = statusMsg;
+    el.append(s);
+  }
+  if (sticky) {
+    const s = document.createElement('div'); s.className = 'bad'; s.textContent = sticky;
     el.append(s);
   }
 }
@@ -498,20 +576,31 @@ $('import').onclick = () => {
   const t = showIO('Import', 'Paste an exported stream. It is verified before it replaces anything.', '', true);
   $('io-ok').textContent = 'Import';
   $('io-ok').onclick = async () => {
+    // Everything below works on a CANDIDATE. The live chain is not touched until
+    // the candidate has verified AND replayed — the previous version assigned the
+    // globals first and only restored them on one branch, so anything that made
+    // verification THROW left the app running on the pasted chain, and the next
+    // ordinary edit wrote it over the user's record.
     let data;
     try { data = JSON.parse(t.value); } catch (e) { setStatus('that is not JSON', 'bad'); return; }
-    if (!data || !Array.isArray(data.frames) || !data.stream_id) { setStatus('no stream in there', 'bad'); return; }
-    const keepF = frames, keepS = streamId;
-    frames = data.frames; streamId = data.stream_id;
-    const problems = await verifyChain();
-    if (problems.length) {
-      frames = keepF; streamId = keepS;
-      setStatus('refused: ' + problems[0], 'bad');
-      $('io').close(); $('io-ok').textContent = 'Close'; $('io-ok').onclick = () => $('io').close();
-      render(); return;
+    if (!isPlainObject(data) || !Array.isArray(data.frames) || typeof data.stream_id !== 'string' || !data.stream_id) {
+      setStatus('no stream in there', 'bad'); return;
     }
-    save(LS.frames, frames); save(LS.stream, streamId);
-    board = project(frames);
+    let problems;
+    try { problems = await verifyChain(data.frames, data.stream_id); }
+    catch (e) { problems = ['could not be verified: ' + e.message]; }
+    if (problems.length) { setStatus('refused: ' + problems[0], 'bad'); return; }
+
+    let nextBoard;
+    try { nextBoard = project(data.frames); }
+    catch (e) { setStatus('refused: those frames cannot be replayed — ' + e.message, 'bad'); return; }
+
+    // verified and replayable; only now does anything change
+    if (!save(LS.frames, data.frames) || !save(LS.stream, data.stream_id)) {
+      setStatus('refused: could not write it to storage, so nothing was changed', 'bad'); return;
+    }
+    frames = data.frames; streamId = data.stream_id; board = nextBoard;
+    unstick();
     $('io').close(); $('io-ok').textContent = 'Close'; $('io-ok').onclick = () => $('io').close();
     render(); setStatus(`imported ${frames.length} frames, all verified`, 'ok');
   };
@@ -519,19 +608,23 @@ $('import').onclick = () => {
 $('reset').onclick = async () => {
   if (!confirm('Start a new stream? Export first if you want to keep this one.')) return;
   localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
-  frames = []; streamId = await mintStream(); save(LS.stream, streamId);
-  await append({ event: 'room.opened', title: 'The Workroom' });
-  setStatus('new stream minted', 'ok');
+  frames = []; streamId = await mintStream();
+  if (!save(LS.stream, streamId)) { stick('storage is not writable here — a new stream cannot be kept'); return; }
+  unstick();
+  if (await append({ event: 'room.opened', title: 'The Workroom' })) setStatus('new stream minted', 'ok');
 };
 
 $('verify').onclick = async () => {
   setStatus('verifying…');
-  const problems = await verifyChain();
-  if (!problems.length) {
-    setStatus(`all ${frames.length} frames verified — every hash recomputed, every link followed`, 'ok');
-  } else {
-    setStatus(`${problems.length} problem(s): ${problems[0]}`, 'bad');
-  }
+  const problems = await verifyChain(frames, streamId);
+  // ...and the record is what is on DISK. Verifying only the in-memory array is
+  // how the app used to certify frames that had never been written.
+  const onDisk = load(LS.frames) || [];
+  const same = JSON.stringify(onDisk) === JSON.stringify(frames);
+  if (problems.length) setStatus(`${problems.length} problem(s): ${problems[0]}`, 'bad');
+  else if (!same) setStatus(`the ${frames.length} frames here verify, but storage holds ${onDisk.length} — `
+                          + 'this browser is not saving them. Export now.', 'bad');
+  else setStatus(`all ${frames.length} frames verified — every hash recomputed, every link followed, and they are on disk`, 'ok');
 };
 $('rebuild').onclick = () => {
   board = { cards: {}, order: {} };
@@ -556,7 +649,9 @@ $('tab-about').onclick = () => {
   if (!frames.length) await append({ event: 'room.opened', title: 'The Workroom' });
   board = project(frames);
   render();
-  const problems = await verifyChain();
+  let problems;
+  try { problems = await verifyChain(frames, streamId); }
+  catch (e) { problems = ['could not be verified: ' + e.message]; }
   setStatus(problems.length ? `chain has ${problems.length} problem(s): ${problems[0]}`
                             : `${frames.length} frames, verified on load`,
             problems.length ? 'bad' : 'ok');
