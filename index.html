@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Workroom</title>
+<style>
+  :root{
+    --paper:#0b0d12; --panel:#11141c; --panel-2:#161a24; --line:#222836;
+    --ink:#e8ebf2; --ink-dim:#8b93a7; --ink-faint:#5b6377;
+    --accent:#5ee6a8;        /* the only accent — it marks what is verified */
+    --warn:#ffb454; --bad:#ff6b6b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--paper);color:var(--ink);font:14px/1.5 var(--sans);
+       display:flex;flex-direction:column;overflow:hidden}
+
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;
+         border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+  header h1{font:600 15px/1 var(--sans);margin:0;letter-spacing:.02em}
+  header h1 span{color:var(--ink-faint);font-weight:400}
+  .grow{flex:1}
+  button{font:500 12px/1 var(--sans);color:var(--ink);background:var(--panel-2);
+         border:1px solid var(--line);border-radius:7px;padding:8px 12px;cursor:pointer}
+  button:hover{border-color:#33405a}
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06281a;font-weight:650}
+  button.ghost{background:transparent}
+  input,textarea,select{font:13px/1.4 var(--sans);color:var(--ink);background:var(--panel-2);
+         border:1px solid var(--line);border-radius:7px;padding:8px 10px;width:100%}
+  input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+  main{flex:1;display:flex;min-height:0}
+  #board{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:14px;overflow:auto}
+  .lane{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        display:flex;flex-direction:column;min-height:0}
+  .lane.over{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .lane h2{font:600 11px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;
+           color:var(--ink-dim);margin:0;padding:12px 12px 10px;display:flex;gap:8px;align-items:center}
+  .lane h2 b{margin-left:auto;font:400 11px/1 var(--mono);color:var(--ink-faint)}
+  .cards{flex:1;overflow:auto;padding:0 10px 10px;display:flex;flex-direction:column;gap:8px}
+  .card{background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:10px 11px;cursor:grab}
+  .card:active{cursor:grabbing}
+  .card.sel{border-color:var(--accent)}
+  .card .t{font-weight:550;margin-bottom:4px;word-break:break-word}
+  .card .n{color:var(--ink-dim);font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+  .card .meta{margin-top:7px;display:flex;gap:6px;align-items:center;
+              font:11px/1 var(--mono);color:var(--ink-faint)}
+  .who{background:#1d2432;border:1px solid var(--line);border-radius:20px;padding:3px 7px;color:var(--ink-dim)}
+  .row{display:flex;gap:6px;margin-top:8px}
+  .row button{padding:5px 8px;font-size:11px}
+  .add{margin:0 10px 10px;display:flex;gap:6px}
+  .add input{flex:1}
+
+  aside{width:392px;flex:0 0 auto;border-left:1px solid var(--line);background:var(--panel);
+        display:flex;flex-direction:column;min-height:0}
+  aside .tabs{display:flex;border-bottom:1px solid var(--line)}
+  aside .tabs button{flex:1;border:0;border-radius:0;background:transparent;padding:11px 8px;
+                     color:var(--ink-dim);border-bottom:2px solid transparent}
+  aside .tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+  .pane{flex:1;overflow:auto;padding:12px;display:none}
+  .pane.on{display:block}
+  .frame{border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-bottom:8px;background:var(--panel-2)}
+  .frame .h{display:flex;gap:8px;align-items:baseline;font:11px/1.3 var(--mono);color:var(--ink-faint)}
+  .frame .h b{color:var(--accent);font-weight:600}
+  .frame .w{margin-top:5px;font-size:12.5px;color:var(--ink)}
+  .frame .k{margin-top:5px;font:10.5px/1.45 var(--mono);color:var(--ink-faint);word-break:break-all}
+  .status{border-top:1px solid var(--line);padding:10px 12px;font:11px/1.5 var(--mono);color:var(--ink-faint)}
+  .status b{color:var(--ink-dim);font-weight:500}
+  .ok{color:var(--accent)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .note{color:var(--ink-dim);font-size:12.5px;margin:0 0 12px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font:11px/1.5 var(--mono);
+      color:var(--ink-faint);word-break:break-all}
+  .kv b{color:var(--ink-dim);font-weight:500}
+  .empty{color:var(--ink-faint);font-size:12.5px;padding:8px 2px}
+  dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);
+         border-radius:12px;padding:0;width:min(560px,92vw)}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog .body{padding:16px}
+  dialog h3{margin:0 0 10px;font-size:14px}
+  dialog textarea{height:190px;font:11.5px/1.5 var(--mono);resize:vertical}
+  dialog .foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>The Workroom <span>· local, append-only</span></h1>
+  <button id="verify">Verify the chain</button>
+  <button id="rebuild" class="ghost" title="Throw the board away and rebuild it from the frames">Rebuild from frames</button>
+  <div class="grow"></div>
+  <button id="export" class="ghost">Export</button>
+  <button id="import" class="ghost">Import</button>
+  <button id="reset" class="ghost" title="Start a new stream — the old one is exported first">Reset</button>
+</header>
+
+<main>
+  <div id="board"></div>
+  <aside>
+    <div class="tabs" role="tablist">
+      <button id="tab-ledger" role="tab" aria-selected="true">Ledger</button>
+      <button id="tab-about" role="tab" aria-selected="false">Stream</button>
+    </div>
+    <div class="pane on" id="pane-ledger"></div>
+    <div class="pane" id="pane-about"></div>
+    <div class="status" id="status">…</div>
+  </aside>
+</main>
+
+<dialog id="io">
+  <div class="body">
+    <h3 id="io-title">Export</h3>
+    <p class="note" id="io-note"></p>
+    <textarea id="io-text" spellcheck="false"></textarea>
+  </div>
+  <div class="foot">
+    <button id="io-copy" class="ghost">Copy</button>
+    <button id="io-ok" class="primary">Close</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+/* ────────────────────────────────────────────────────────────────────────────
+   THE WORKROOM
+
+   A board is a convenient way to LOOK at work. It is not the record. The record
+   is an append-only chain of rapp/1 frames in this browser's localStorage, and
+   the board you see is a projection of it — press "Rebuild from frames" and the
+   board is thrown away and replayed from the chain, which is the only reason to
+   believe the chain is the truth rather than a log written beside it.
+
+   Conformance (SPEC.md rev-6, kody-w/rapp-1):
+     §4  canonicalization — RFC 8785 JCS over the I-JSON domain (no floats)
+     §5  H(space, v) = sha256( utf8(space) || 0x0A || canonical(v) )
+     §6  the rappid is MINTED ONCE from random bytes — never a hash of a name
+     §7  the frame is exactly eleven keys; particle then wave
+   Cross-checked against the reference Python implementation by verify_parity.mjs;
+   the same payload must produce the same two hashes in both, or this is not
+   rapp/1 and the word should not be used.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+const SPEC = 'rapp/1';
+const KIND = 'memory.save';              // a registered kind (§13). Nothing here invents one.
+const OWNER = 'kody-w', SLUG = 'workroom';
+const LS = { stream: 'workroom.stream', frames: 'workroom.frames' };
+const LANES = [
+  { id: 'now',     name: 'Now' },
+  { id: 'next',    name: 'Next' },
+  { id: 'blocked', name: 'Blocked' },
+  { id: 'done',    name: 'Done' },
+];
+
+/* ── §4 canonicalization ─────────────────────────────────────────────────── */
+function canonical(v) {
+  if (v === null || typeof v === 'boolean') return JSON.stringify(v);
+  if (typeof v === 'number') {
+    if (!Number.isInteger(v)) throw new Error('floats are outside this profile; use ints or strings');
+    if (!Number.isSafeInteger(v)) throw new Error('int outside the interoperable range; carry it as a string');
+    return JSON.stringify(v);
+  }
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+  if (typeof v === 'object') {
+    // RFC 8785 orders member names by UTF-16 code units, which is exactly what
+    // JavaScript's default string sort does — the one place JS gets JCS for free.
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}';
+  }
+  throw new Error('non-I-JSON value: ' + typeof v);
+}
+
+/* ── §5 domain-separated content addressing ──────────────────────────────── */
+const enc = new TextEncoder();
+async function sha256Hex(bytes) {
+  const d = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function joinBytes(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0); out.set(b, a.length);
+  return out;
+}
+async function H(space, v) {
+  return sha256Hex(joinBytes(enc.encode(space + '\n'), enc.encode(canonical(v))));
+}
+async function Hb(space, bytes) {
+  return sha256Hex(joinBytes(enc.encode(space + '\n'), bytes));
+}
+
+/* ── §6 identity — minted once, from randomness ──────────────────────────── */
+async function mintStream() {
+  // §6.2 keyless: the tail is Hb over sixteen random octets. It is NOT derived
+  // from "@owner/slug" — a name-hash is the one thing the spec calls a cardinal
+  // sin, because two different things with the same name would collide.
+  const uuid = crypto.getRandomValues(new Uint8Array(16));
+  const tail = await Hb('rapp/1:rappid', uuid);
+  const instance = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
+  const rappid = `rappid:@${OWNER}/${SLUG}:${tail}`;
+  return `${rappid}:${instance.slice(0, 16)}`;      // memory-stream = rappid ":" instance
+}
+
+/* ── §7 the frame ────────────────────────────────────────────────────────── */
+function utcNow() {
+  // exactly YYYY-MM-DDTHH:MM:SS.mmmZ — 24 bytes, three fractional digits
+  return new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+}
+async function buildFrame(streamId, seq, payload, prev) {
+  const payload_hash = await H('rapp/1:particle', payload);
+  const pre = {
+    spec: SPEC, kind: KIND, stream_id: streamId, seq, utc: utcNow(),
+    payload, payload_hash,
+    prev,                     // predecessor's payload_hash (the worldline link)
+    prev_wave: null,          // §7.4: null on every memory stream, always
+  };
+  // the wave pre-image is the frame minus exactly frame_hash and sig
+  const frame_hash = await H('rapp/1:wave', pre);
+  return { ...pre, frame_hash, sig: null };
+}
+
+/* ── state ───────────────────────────────────────────────────────────────── */
+let streamId = null;
+let frames = [];
+let board = { cards: {}, order: {} };     // the PROJECTION, never the record
+let selected = null;
+
+const $ = id => document.getElementById(id);
+const load = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {
+  setStatus('could not write to localStorage — the chain is not being saved', 'bad'); } };
+
+/* ── the projection: the board is replayed, never edited in place ────────── */
+function project(list) {
+  const b = { cards: {}, order: {} };
+  LANES.forEach(l => b.order[l.id] = []);
+  for (const f of list) {
+    const p = f.payload, id = p.card;
+    switch (p.event) {
+      case 'card.added':
+        b.cards[id] = { id, title: p.title, note: p.note || '', who: p.who || '', lane: p.lane };
+        b.order[p.lane].push(id);
+        break;
+      case 'card.moved': {
+        const c = b.cards[id]; if (!c) break;
+        b.order[c.lane] = b.order[c.lane].filter(x => x !== id);
+        c.lane = p.lane;
+        const to = b.order[p.lane];
+        to.splice(Math.min(typeof p.at === 'number' ? p.at : to.length, to.length), 0, id);
+        break;
+      }
+      case 'card.edited': {
+        const c = b.cards[id]; if (!c) break;
+        if ('title' in p) c.title = p.title;
+        if ('note' in p) c.note = p.note;
+        if ('who' in p) c.who = p.who;
+        break;
+      }
+      case 'card.removed': {
+        const c = b.cards[id]; if (!c) break;
+        b.order[c.lane] = b.order[c.lane].filter(x => x !== id);
+        delete b.cards[id];
+        break;
+      }
+      // 'room.opened' carries no board state; it is the genesis frame
+    }
+  }
+  return b;
+}
+
+/* ── appending — the only way anything ever changes ──────────────────────── */
+async function append(payload) {
+  const prevFrame = frames[frames.length - 1] || null;
+  const f = await buildFrame(streamId, frames.length, payload, prevFrame ? prevFrame.payload_hash : null);
+  frames.push(f);
+  save(LS.frames, frames);
+  board = project(frames);
+  render();
+  return f;
+}
+
+/* ── verification (§7.5, the parts a local reader can check) ─────────────── */
+async function verifyChain() {
+  const problems = [];
+  let prev = null;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    const keys = Object.keys(f).sort().join(',');
+    const want = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
+    if (keys !== want) { problems.push(`frame ${i}: key set is not the eleven`); continue; }
+    if (f.spec !== SPEC) problems.push(`frame ${i}: spec is not ${SPEC}`);
+    if (f.seq !== i) problems.push(`frame ${i}: seq is ${f.seq}, expected ${i}`);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(f.utc)) problems.push(`frame ${i}: utc is not the fixed 24-byte form`);
+    if (f.prev_wave !== null) problems.push(`frame ${i}: prev_wave must be null on a memory stream`);
+    if (i === 0 && f.prev !== null) problems.push('genesis: prev must be null');
+    if (i > 0 && f.prev !== prev.payload_hash) problems.push(`frame ${i}: prev does not link to frame ${i - 1}`);
+
+    const ph = await H('rapp/1:particle', f.payload);
+    if (ph !== f.payload_hash) problems.push(`frame ${i}: payload_hash does not match the payload`);
+    const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
+    const fh = await H('rapp/1:wave', pre);
+    if (fh !== f.frame_hash) problems.push(`frame ${i}: frame_hash does not match the frame`);
+    prev = f;
+  }
+  return problems;
+}
+
+/* ── rendering ───────────────────────────────────────────────────────────── */
+function esc(s) { return String(s == null ? '' : s); }
+
+function render() {
+  const el = $('board');
+  el.innerHTML = '';
+  for (const lane of LANES) {
+    const ids = board.order[lane.id] || [];
+    const d = document.createElement('div');
+    d.className = 'lane'; d.dataset.lane = lane.id;
+
+    const h = document.createElement('h2');
+    h.append(lane.name);
+    const b = document.createElement('b'); b.textContent = String(ids.length);
+    h.append(b); d.append(h);
+
+    const cards = document.createElement('div'); cards.className = 'cards';
+    if (!ids.length) {
+      const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'nothing here yet';
+      cards.append(e);
+    }
+    for (const id of ids) {
+      const c = board.cards[id]; if (!c) continue;
+      const card = document.createElement('div');
+      card.className = 'card' + (selected === id ? ' sel' : '');
+      card.draggable = true; card.dataset.id = id;
+
+      const t = document.createElement('div'); t.className = 't'; t.textContent = esc(c.title); card.append(t);
+      if (c.note) { const n = document.createElement('div'); n.className = 'n'; n.textContent = esc(c.note); card.append(n); }
+
+      const meta = document.createElement('div'); meta.className = 'meta';
+      if (c.who) { const w = document.createElement('span'); w.className = 'who'; w.textContent = esc(c.who); meta.append(w); }
+      const idl = document.createElement('span'); idl.textContent = id.slice(0, 6); meta.append(idl);
+      card.append(meta);
+
+      const row = document.createElement('div'); row.className = 'row';
+      for (const l of LANES) {
+        if (l.id === lane.id) continue;
+        const mb = document.createElement('button');
+        mb.className = 'ghost'; mb.textContent = '→ ' + l.name;
+        mb.onclick = (ev) => { ev.stopPropagation(); move(id, l.id); };
+        row.append(mb);
+      }
+      const eb = document.createElement('button');
+      eb.className = 'ghost'; eb.textContent = 'edit';
+      eb.onclick = (ev) => { ev.stopPropagation(); editCard(id); };
+      row.append(eb);
+      const rb = document.createElement('button');
+      rb.className = 'ghost'; rb.textContent = 'remove';
+      rb.onclick = (ev) => { ev.stopPropagation(); removeCard(id); };
+      row.append(rb);
+      card.append(row);
+
+      card.addEventListener('dragstart', e => { selected = id; e.dataTransfer.setData('text/plain', id); });
+      cards.append(card);
+    }
+    d.append(cards);
+
+    const add = document.createElement('div'); add.className = 'add';
+    const inp = document.createElement('input');
+    inp.placeholder = 'add to ' + lane.name + '…';
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && inp.value.trim()) { addCard(lane.id, inp.value.trim()); inp.value = ''; }
+    });
+    add.append(inp);
+    d.append(add);
+
+    d.addEventListener('dragover', e => { e.preventDefault(); d.classList.add('over'); });
+    d.addEventListener('dragleave', () => d.classList.remove('over'));
+    d.addEventListener('drop', e => {
+      e.preventDefault(); d.classList.remove('over');
+      const id = e.dataTransfer.getData('text/plain');
+      if (id && board.cards[id] && board.cards[id].lane !== lane.id) move(id, lane.id);
+    });
+    el.append(d);
+  }
+  renderLedger();
+  renderAbout();
+  setStatus();
+}
+
+function renderLedger() {
+  const p = $('pane-ledger');
+  p.innerHTML = '';
+  if (!frames.length) { p.innerHTML = '<div class="empty">no frames yet</div>'; return; }
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i], pl = f.payload;
+    const d = document.createElement('div'); d.className = 'frame';
+    const h = document.createElement('div'); h.className = 'h';
+    const b = document.createElement('b'); b.textContent = '#' + f.seq;
+    h.append(b, ' ', pl.event, ' · ', f.utc.slice(11, 19));
+    const w = document.createElement('div'); w.className = 'w';
+    w.textContent = pl.event === 'room.opened' ? (pl.title || 'the room was opened')
+      : pl.event === 'card.moved' ? `${pl.titleAt || pl.card.slice(0, 6)} → ${pl.lane}`
+      : pl.event === 'card.added' ? `${pl.title} (${pl.lane})`
+      : pl.event === 'card.edited' ? `edited ${pl.titleAt || pl.card.slice(0, 6)}`
+      : pl.event === 'card.removed' ? `removed ${pl.titleAt || pl.card.slice(0, 6)}` : pl.event;
+    const k = document.createElement('div'); k.className = 'k';
+    k.textContent = 'particle ' + f.payload_hash.slice(0, 24) + '…\nwave     ' + f.frame_hash.slice(0, 24) + '…';
+    d.append(h, w, k);
+    p.append(d);
+  }
+}
+
+function renderAbout() {
+  const p = $('pane-about');
+  const head = frames[frames.length - 1];
+  p.innerHTML = '';
+  const note = document.createElement('p'); note.className = 'note';
+  note.textContent = 'The board is a projection. This chain is the record: every change is one '
+    + 'rapp/1 frame, appended, never edited. Nothing leaves this browser unless you export it.';
+  const kv = document.createElement('div'); kv.className = 'kv';
+  const rows = [
+    ['spec', SPEC + ' (rev-6)'],
+    ['kind', KIND],
+    ['stream', streamId || '—'],
+    ['frames', String(frames.length)],
+    ['head seq', head ? String(head.seq) : '—'],
+    ['head wave', head ? head.frame_hash : '—'],
+  ];
+  for (const [k, v] of rows) {
+    const b = document.createElement('b'); b.textContent = k;
+    const s = document.createElement('span'); s.textContent = v;
+    kv.append(b, s);
+  }
+  p.append(note, kv);
+}
+
+let statusMsg = null, statusCls = '';
+function setStatus(msg, cls) {
+  if (msg !== undefined) { statusMsg = msg; statusCls = cls || ''; }
+  const head = frames[frames.length - 1];
+  const el = $('status');
+  el.innerHTML = '';
+  const a = document.createElement('span');
+  a.innerHTML = `<b>${frames.length}</b> frames · head <b>${head ? head.frame_hash.slice(0, 12) : '—'}</b>`;
+  el.append(a);
+  if (statusMsg) {
+    const s = document.createElement('div'); s.className = statusCls; s.textContent = statusMsg;
+    el.append(s);
+  }
+}
+
+/* ── actions ─────────────────────────────────────────────────────────────── */
+function newId() {
+  return [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function addCard(lane, title) {
+  await append({ event: 'card.added', card: newId(), lane, title, note: '', who: '' });
+  setStatus('added', 'ok');
+}
+async function move(id, lane) {
+  const c = board.cards[id]; if (!c) return;
+  await append({ event: 'card.moved', card: id, lane, titleAt: c.title });
+  setStatus('moved', 'ok');
+}
+async function removeCard(id) {
+  const c = board.cards[id]; if (!c) return;
+  await append({ event: 'card.removed', card: id, titleAt: c.title });
+  setStatus('removed — the frame that added it is still in the chain', 'ok');
+}
+async function editCard(id) {
+  const c = board.cards[id]; if (!c) return;
+  const title = prompt('Title', c.title); if (title === null) return;
+  const note = prompt('Note (optional)', c.note); if (note === null) return;
+  const who = prompt('Who (initials, optional)', c.who); if (who === null) return;
+  await append({ event: 'card.edited', card: id, title: title.trim(), note: note.trim(), who: who.trim(), titleAt: c.title });
+  setStatus('edited', 'ok');
+}
+
+/* ── io ──────────────────────────────────────────────────────────────────── */
+function showIO(title, note, text, editable) {
+  $('io-title').textContent = title;
+  $('io-note').textContent = note;
+  const t = $('io-text'); t.value = text; t.readOnly = !editable;
+  $('io').showModal();
+  return t;
+}
+$('export').onclick = () => {
+  showIO('Export', 'The whole stream. Paste it into another browser and it rebuilds exactly this board.',
+    JSON.stringify({ stream_id: streamId, frames }, null, 2), false);
+};
+$('io-copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('io-text').value); $('io-copy').textContent = 'Copied'; setTimeout(() => $('io-copy').textContent = 'Copy', 1200); }
+  catch (e) { $('io-text').select(); }
+};
+$('io-ok').onclick = () => $('io').close();
+$('import').onclick = () => {
+  const t = showIO('Import', 'Paste an exported stream. It is verified before it replaces anything.', '', true);
+  $('io-ok').textContent = 'Import';
+  $('io-ok').onclick = async () => {
+    let data;
+    try { data = JSON.parse(t.value); } catch (e) { setStatus('that is not JSON', 'bad'); return; }
+    if (!data || !Array.isArray(data.frames) || !data.stream_id) { setStatus('no stream in there', 'bad'); return; }
+    const keepF = frames, keepS = streamId;
+    frames = data.frames; streamId = data.stream_id;
+    const problems = await verifyChain();
+    if (problems.length) {
+      frames = keepF; streamId = keepS;
+      setStatus('refused: ' + problems[0], 'bad');
+      $('io').close(); $('io-ok').textContent = 'Close'; $('io-ok').onclick = () => $('io').close();
+      render(); return;
+    }
+    save(LS.frames, frames); save(LS.stream, streamId);
+    board = project(frames);
+    $('io').close(); $('io-ok').textContent = 'Close'; $('io-ok').onclick = () => $('io').close();
+    render(); setStatus(`imported ${frames.length} frames, all verified`, 'ok');
+  };
+};
+$('reset').onclick = async () => {
+  if (!confirm('Start a new stream? Export first if you want to keep this one.')) return;
+  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
+  frames = []; streamId = await mintStream(); save(LS.stream, streamId);
+  await append({ event: 'room.opened', title: 'The Workroom' });
+  setStatus('new stream minted', 'ok');
+};
+
+$('verify').onclick = async () => {
+  setStatus('verifying…');
+  const problems = await verifyChain();
+  if (!problems.length) {
+    setStatus(`all ${frames.length} frames verified — every hash recomputed, every link followed`, 'ok');
+  } else {
+    setStatus(`${problems.length} problem(s): ${problems[0]}`, 'bad');
+  }
+};
+$('rebuild').onclick = () => {
+  board = { cards: {}, order: {} };
+  render();
+  setTimeout(() => { board = project(frames); render(); setStatus('board thrown away and replayed from the chain', 'ok'); }, 260);
+};
+
+$('tab-ledger').onclick = () => {
+  $('tab-ledger').setAttribute('aria-selected', 'true'); $('tab-about').setAttribute('aria-selected', 'false');
+  $('pane-ledger').classList.add('on'); $('pane-about').classList.remove('on');
+};
+$('tab-about').onclick = () => {
+  $('tab-about').setAttribute('aria-selected', 'true'); $('tab-ledger').setAttribute('aria-selected', 'false');
+  $('pane-about').classList.add('on'); $('pane-ledger').classList.remove('on');
+};
+
+/* ── boot ────────────────────────────────────────────────────────────────── */
+(async function boot() {
+  streamId = load(LS.stream);
+  frames = load(LS.frames) || [];
+  if (!streamId) { streamId = await mintStream(); save(LS.stream, streamId); }
+  if (!frames.length) await append({ event: 'room.opened', title: 'The Workroom' });
+  board = project(frames);
+  render();
+  const problems = await verifyChain();
+  setStatus(problems.length ? `chain has ${problems.length} problem(s): ${problems[0]}`
+                            : `${frames.length} frames, verified on load`,
+            problems.length ? 'bad' : 'ok');
+})();
+</script>
+</body>
+</html>
