@@ -376,6 +376,7 @@ function append(payload) {
 }
 
 async function appendOne(payload) {
+  if (refused) { stick(refused); render(); return null; }
   const prevFrame = frames[frames.length - 1] || null;
   const f = await buildFrame(streamId, frames.length, payload,
                              prevFrame ? prevFrame.payload_hash : null,
@@ -432,6 +433,10 @@ function utcIsReal(u) {
   const d = new Date(u);                       // catches 2026-02-31 and friends
   return !isNaN(d.getTime()) && d.toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z') === u;
 }
+// a day of tolerance covers a skewed clock; a year does not happen by accident
+function FUTURE_LIMIT() {
+  return new Date(Date.now() + 24 * 3600 * 1000).toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+}
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -454,6 +459,10 @@ async function verifyChain(list, expectStream) {
       if (!Number.isSafeInteger(f.seq) || f.seq < 0) problems.push(`frame ${i}: seq is not a uint53`);
       else if (f.seq !== i) problems.push(`frame ${i}: seq is ${f.seq}, expected ${i}`);
       if (!utcIsReal(f.utc)) problems.push(`frame ${i}: utc is not a real time in the fixed 24-byte form`);
+      // Nothing bounded a frame's time from ABOVE. utcNow() floors each new frame at its
+      // predecessor, so one imported frame dated 2087 silently became the clock for every
+      // frame written afterwards — and Verify went on calling it fully verified.
+      else if (f.utc > FUTURE_LIMIT()) problems.push(`frame ${i}: utc is far in the future`);
       if (f.sig !== null) problems.push(`frame ${i}: sig must be null — this app does not sign`);
       if (f.prev_wave !== null) problems.push(`frame ${i}: prev_wave must be null on a memory stream`);
       if (i === 0 && f.prev !== null) problems.push('genesis: prev must be null');
@@ -652,6 +661,11 @@ function renderAbout() {
 }
 
 let statusMsg = null, statusCls = '', sticky = null;
+// A refusal that only prints is not a refusal: boot() blanked the board and said
+// "nothing has been changed", but set nothing any writer consulted — so the next
+// keystroke appended to the very chain it had just rejected, reported "added",
+// and adopted the fork for good.
+let refused = null;
 // Some failures must not be overwritable by the next cheerful "added". A sticky
 // message stays until the condition that caused it is gone.
 function stick(msg) { sticky = msg; render(); }
@@ -769,7 +783,12 @@ $('import').onclick = () => {
 };
 $('reset').onclick = async () => {
   if (!confirm('Start a new stream?\n\nThis discards the current record from this browser. It is NOT exported for you — press Cancel and use Export if you want to keep it.')) return;
-  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream); localStorage.removeItem(LS.head);
+  // Only this stream's mark. The head is a map precisely so a mark for one stream
+  // survives work on another; wiping it wholesale re-armed the rollback for every
+  // stream the browser had ever verified.
+  try { const h = loadHeads(); if (streamId) delete h[streamId]; save(LS.head, h); } catch (e) {}
+  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
+  refused = null;
   frames = []; streamId = await mintStream();
   if (!save(LS.stream, streamId)) { stick('storage is not writable here — a new stream cannot be kept'); return; }
   unstick();
@@ -807,7 +826,12 @@ $('tab-about').onclick = () => {
 
 /* ── boot ────────────────────────────────────────────────────────────────── */
 (async function boot() {
-  frames = load(LS.frames) || [];
+  // `load() || []` accepted any non-null JSON — an object or a number has no length,
+  // so every later `frames.length` test was falsy and the page rendered nothing at all
+  // with no message. An unreadable record is a thing to REPORT, not to treat as empty.
+  const rawFrames = load(LS.frames);
+  const unreadable = rawFrames !== null && !Array.isArray(rawFrames);
+  frames = Array.isArray(rawFrames) ? rawFrames : [];
   streamId = load(LS.stream);
   // The chain declares which stream it belongs to. Minting a fresh id over frames
   // that already carry their own branded a perfectly good record as broken —
@@ -840,12 +864,34 @@ $('tab-about').onclick = () => {
     board = { cards: {}, order: {} };
     LANES.forEach(l => board.order[l.id] = []);
     render();
-    setStatus('this record does not verify — ' + problems[0]
-            + '. Nothing has been changed; export it before doing anything else.', 'bad');
+    refused = 'this record does not verify — ' + problems[0]
+            + '. Nothing has been changed and nothing will be written; export it, then Reset.';
+    setStatus(refused, 'bad');
+    stick(refused);
     return;
   }
 
+  if (unreadable) {
+    refused = 'the stored record could not be read — it is still on disk, untouched. '
+            + 'Nothing will be written until it is repaired or you Reset.';
+    board = { cards: {}, order: {} }; LANES.forEach(l => board.order[l.id] = []);
+    render(); stick(refused); return;
+  }
+
   if (!frames.length) {
+    // Starting a fresh chain on a stream the head already knows would be a re-genesis,
+    // which §7.6 permits only against a registry this app does not have — and because a
+    // head only ever rises, the new chain could never satisfy it: the board would refuse
+    // its own output on the next load, forever. So a lost frames key gets a NEW stream,
+    // and the old high-water mark is left standing.
+    if (streamId && loadHeads()[streamId]) {
+      const lost = streamId;
+      streamId = await mintStream();
+      if (!save(LS.stream, streamId)) { stick('storage is not writable here — nothing will be kept.'); return; }
+      setStatus('the frames for the previous record are gone from this browser, so this is a new '
+              + 'stream. The old one (' + lost.slice(0, 28) + '…) is still refused if it turns up '
+              + 'older than what was already verified.', 'warn');
+    }
     if (!await append({ event: 'room.opened', title: 'The Workroom' })) return;
   } else {
     rememberHead(frames, streamId);

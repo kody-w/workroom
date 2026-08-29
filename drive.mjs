@@ -310,6 +310,37 @@ const headSeq = await page.evaluate(() => {
 });
 say('head was not demoted', String(headSeq === highSeq));
 
+// A refusal has to LATCH. Printing one and leaving the inputs live meant the next
+// keystroke appended to the very chain that had just been rejected — and said "added".
+// (the rolled-back disk from the case above is still installed here)
+const framesAtRefusal = (await frames()).length;
+await add(0, 'typed after the refusal');
+await page.waitForTimeout(300);
+say('refusal latches: nothing appended', String((await frames()).length === framesAtRefusal));
+say('refusal latches: says so', /does not verify|nothing will be written/i.test(await status()) ? 'yes' : 'NO');
+
+// an unreadable frames key is a thing to report, not to silently treat as empty
+await page.evaluate(() => localStorage.setItem('workroom.frames', '{"not":"an array"}'));
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.waitForTimeout(400);
+say('unreadable record reported', /could not be read/i.test(await status()) ? 'yes' : 'NO — silent');
+say('unreadable record left alone', String(await page.evaluate(() => localStorage.getItem('workroom.frames')) === '{"not":"an array"}'));
+
+// losing the frames key must not re-genesis onto a stream the head already knows
+await page.evaluate(() => { localStorage.removeItem('workroom.frames'); });
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.waitForTimeout(400);
+const newStream = await page.evaluate(() => JSON.parse(localStorage.getItem('workroom.stream')));
+const heads = await page.evaluate(() => JSON.parse(localStorage.getItem('workroom.head') || '{}'));
+say('lost chain got a NEW stream', String(Object.keys(heads).some(k => k !== newStream)));
+await add(0, 'works on the new stream'); await page.waitForTimeout(200);
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.waitForTimeout(400);
+say('new stream survives a reload', /verified on load/i.test(await status()) ? 'yes' : 'NO — it refused its own output');
+
 await page.screenshot({ path: join(here, 'shot.png'), fullPage: false });
 await browser.close();
 
