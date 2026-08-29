@@ -7,6 +7,7 @@
  * and checks the app REFUSES it. A ledger that cannot detect tampering is a log.
  */
 import { chromium } from 'playwright';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -152,6 +153,64 @@ await page.waitForTimeout(400);
 const surStatus = await status();
 say('unpaired surrogate refused', /surrogate|refused/i.test(surStatus) ? 'yes' : 'NO — it accepted it');
 say('surrogate import: chain untouched', String(JSON.stringify(await frames()) === liveBeforeSur));
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// A chain can be perfectly hashed and still be unrenderable. Build one with the
+// app's OWN primitives so the hashes are genuinely right, and check it is refused
+// rather than written to disk and thrown on every load thereafter.
+const html = readFileSync(join(here, 'index.html'), 'utf8');
+const prim = html.slice(html.indexOf('/* ── §4 canonicalization'), html.indexOf('/* ── state '));
+const { canonical, H } = await import('data:text/javascript,' + encodeURIComponent(prim + '\nexport { canonical, H };'));
+const mkFrame = async (payload, sid) => {
+  const payload_hash = await H('rapp/1:particle', payload);
+  const pre = { spec: 'rapp/1', kind: 'memory.save', stream_id: sid, seq: 0,
+                utc: '2026-08-29T00:00:00.000Z', payload, payload_hash, prev: null, prev_wave: null };
+  return { ...pre, frame_hash: await H('rapp/1:wave', pre), sig: null };
+};
+const sid2 = 'rappid:@kody-w/workroom:' + 'e'.repeat(64) + ':' + 'f'.repeat(16);
+
+const liveBeforeBrick = JSON.stringify(await frames());
+// genesis is fine; the SECOND frame is a card.added with no card id — hashes valid
+const g = await mkFrame({ event: 'room.opened', title: 'The Workroom' }, sid2);
+const badPayload = { event: 'card.added', lane: 'now', title: 't', note: '', who: '' };
+const ph = await H('rapp/1:particle', badPayload);
+const pre2 = { spec: 'rapp/1', kind: 'memory.save', stream_id: sid2, seq: 1,
+               utc: '2026-08-29T00:00:01.000Z', payload: badPayload, payload_hash: ph,
+               prev: g.payload_hash, prev_wave: null };
+const bad = { ...pre2, frame_hash: await H('rapp/1:wave', pre2), sig: null };
+await page.click('#import');
+await page.fill('#io-text', JSON.stringify({ stream_id: sid2, frames: [g, bad] }));
+await page.click('#io-ok');
+await page.waitForTimeout(400);
+say('unrenderable chain refused', /refused/i.test(await status()) ? 'yes' : 'NO — it accepted it');
+say('unrenderable: chain untouched', String(JSON.stringify(await frames()) === liveBeforeBrick));
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// an empty chain is not a stream
+await page.click('#import');
+await page.fill('#io-text', JSON.stringify({ stream_id: sid2, frames: [] }));
+await page.click('#io-ok');
+await page.waitForTimeout(300);
+say('empty chain refused', /refused/i.test(await status()) ? 'yes' : 'NO — it wiped the record');
+await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
+
+// a half-write must leave BOTH keys as they were, not one of them replaced
+const beforeF = await page.evaluate(() => localStorage.getItem('workroom.frames'));
+const beforeS = await page.evaluate(() => localStorage.getItem('workroom.stream'));
+await page.evaluate(() => {
+  const real = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (k, v) {
+    if (k === 'workroom.stream') throw new Error('QuotaExceededError');
+    return real.call(this, k, v);
+  };
+});
+await page.click('#import');
+await page.fill('#io-text', JSON.stringify({ stream_id: sid2, frames: [g] }));
+await page.click('#io-ok');
+await page.waitForTimeout(400);
+const afterF = await page.evaluate(() => localStorage.getItem('workroom.frames'));
+const afterS = await page.evaluate(() => localStorage.getItem('workroom.stream'));
+say('half-write rolled back', String(afterF === beforeF && afterS === beforeS));
 await page.evaluate(() => { const d = document.getElementById('io'); if (d.open) d.close(); });
 
 await page.screenshot({ path: join(here, 'shot.png'), fullPage: false });

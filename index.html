@@ -253,6 +253,26 @@ const load = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); 
 // reporting "verified" over an in-memory chain that was not on disk.
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
 
+// localStorage has no transaction, and the chain lives across TWO keys. Writing
+// them one after another meant a failure on the second left the first committed:
+// the frames replaced while the stream id still pointed at the old chain, and the
+// app announcing that nothing had changed. So: snapshot, write both, and on any
+// failure put back exactly what was there. Restoring a value that already fitted
+// cannot itself overflow.
+function commit(nextFrames, nextStream) {
+  let prevF = null, prevS = null;
+  try { prevF = localStorage.getItem(LS.frames); prevS = localStorage.getItem(LS.stream); } catch (e) { return false; }
+  try {
+    localStorage.setItem(LS.frames, JSON.stringify(nextFrames));
+    localStorage.setItem(LS.stream, JSON.stringify(nextStream));
+    return true;
+  } catch (e) {
+    try { prevF === null ? localStorage.removeItem(LS.frames) : localStorage.setItem(LS.frames, prevF); } catch (e2) {}
+    try { prevS === null ? localStorage.removeItem(LS.stream) : localStorage.setItem(LS.stream, prevS); } catch (e2) {}
+    return false;
+  }
+}
+
 /* ── the projection: the board is replayed, never edited in place ────────── */
 function project(list) {
   const b = { cards: {}, order: {} };
@@ -299,8 +319,18 @@ function project(list) {
 async function append(payload) {
   const prevFrame = frames[frames.length - 1] || null;
   const f = await buildFrame(streamId, frames.length, payload, prevFrame ? prevFrame.payload_hash : null);
+  // Another tab of this same file holds its own copy of the chain. Writing our
+  // whole array over theirs would delete frames they had already appended, with
+  // no error anywhere — so notice it and refuse rather than destroy their work.
+  const onDisk = load(LS.frames);
+  if (Array.isArray(onDisk) && onDisk.length > frames.length) {
+    stick('another tab has appended to this chain — reload before making more changes, '
+        + 'or this tab would overwrite what it wrote.');
+    render();
+    return null;
+  }
   frames.push(f);
-  if (!save(LS.frames, frames)) {
+  if (!commit(frames, streamId)) {
     // The frame did not reach disk. Keeping it in memory would chain every later
     // frame onto a predecessor that does not exist, and the whole tail would
     // vanish on reload while the app said it was fine. Refuse the change instead.
@@ -310,6 +340,7 @@ async function append(payload) {
     render();
     return null;
   }
+  unstick();                      // the write landed, so the warning is no longer true
   board = project(frames);
   render();
   return f;
@@ -322,6 +353,7 @@ async function append(payload) {
 // showing a clean status bar over an unverifiable record.
 const KEYS_11 = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
 const LANE_IDS = LANES.map(l => l.id);
+const EVENTS = ['room.opened', 'card.added', 'card.moved', 'card.edited', 'card.removed'];
 
 function utcIsReal(u) {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(u)) return false;
@@ -358,10 +390,32 @@ async function verifyChain(list, expectStream) {
       seen.add(f.stream_id);
       if (expectStream && f.stream_id !== expectStream) problems.push(`frame ${i}: belongs to a different stream`);
 
-      // a payload the board cannot replay is a payload that will brick the board
+      // Hashes prove a frame was not altered. They say nothing about whether the
+      // board can REPLAY it — and a chain that verifies but cannot be rendered is
+      // written to disk and then throws on every load, which is a brick, not a
+      // record. So the payload is checked for the fields the projection and the
+      // ledger actually dereference.
       const p = f.payload;
-      if (isPlainObject(p) && (p.event === 'card.added' || p.event === 'card.moved')
-          && !LANE_IDS.includes(p.lane)) problems.push(`frame ${i}: names a lane that does not exist`);
+      if (isPlainObject(p)) {
+        if (!EVENTS.includes(p.event)) problems.push(`frame ${i}: unknown event ${JSON.stringify(p.event)}`);
+        if (p.event && p.event !== 'room.opened') {
+          if (typeof p.card !== 'string' || !p.card) problems.push(`frame ${i}: no card id`);
+        }
+        if (p.event === 'card.added') {
+          if (typeof p.title !== 'string') problems.push(`frame ${i}: title is not a string`);
+          if (!LANE_IDS.includes(p.lane)) problems.push(`frame ${i}: names a lane that does not exist`);
+        }
+        if (p.event === 'card.moved' && !LANE_IDS.includes(p.lane)) {
+          problems.push(`frame ${i}: names a lane that does not exist`);
+        }
+        for (const k of ['title', 'note', 'who', 'titleAt']) {
+          if (k in p && typeof p[k] !== 'string') problems.push(`frame ${i}: ${k} is not a string`);
+        }
+      }
+      // §7.5 step 4: time does not run backwards along a chain
+      if (i > 0 && prev && typeof f.utc === 'string' && f.utc < prev.utc) {
+        problems.push(`frame ${i}: utc is earlier than the frame before it`);
+      }
 
       const ph = await H('rapp/1:particle', f.payload);
       if (ph !== f.payload_hash) problems.push(`frame ${i}: payload_hash does not match the payload`);
@@ -374,6 +428,12 @@ async function verifyChain(list, expectStream) {
     }
   }
   if (seen.size > 1) problems.push(`the frames come from ${seen.size} different streams`);
+  // An empty array satisfies every per-frame rule vacuously, so it used to import
+  // as "all verified" and replace the record with nothing at all.
+  if (!list.length) problems.push('there are no frames in that — a stream begins at its genesis');
+  else if (!isPlainObject(list[0].payload) || list[0].payload.event !== 'room.opened') {
+    problems.push('the first frame is not a genesis');
+  }
   return problems;
 }
 
@@ -470,10 +530,10 @@ function renderLedger() {
     h.append(b, ' ', pl.event, ' · ', f.utc.slice(11, 19));
     const w = document.createElement('div'); w.className = 'w';
     w.textContent = pl.event === 'room.opened' ? (pl.title || 'the room was opened')
-      : pl.event === 'card.moved' ? `${pl.titleAt || pl.card.slice(0, 6)} → ${pl.lane}`
+      : pl.event === 'card.moved' ? `${pl.titleAt || String(pl.card || '').slice(0, 6)} → ${pl.lane}`
       : pl.event === 'card.added' ? `${pl.title} (${pl.lane})`
-      : pl.event === 'card.edited' ? `edited ${pl.titleAt || pl.card.slice(0, 6)}`
-      : pl.event === 'card.removed' ? `removed ${pl.titleAt || pl.card.slice(0, 6)}` : pl.event;
+      : pl.event === 'card.edited' ? `edited ${pl.titleAt || String(pl.card || '').slice(0, 6)}`
+      : pl.event === 'card.removed' ? `removed ${pl.titleAt || String(pl.card || '').slice(0, 6)}` : pl.event;
     const k = document.createElement('div'); k.className = 'k';
     k.textContent = 'particle ' + f.payload_hash.slice(0, 24) + '…\nwave     ' + f.frame_hash.slice(0, 24) + '…';
     d.append(h, w, k);
@@ -596,7 +656,7 @@ $('import').onclick = () => {
     catch (e) { setStatus('refused: those frames cannot be replayed — ' + e.message, 'bad'); return; }
 
     // verified and replayable; only now does anything change
-    if (!save(LS.frames, data.frames) || !save(LS.stream, data.stream_id)) {
+    if (!commit(data.frames, data.stream_id)) {
       setStatus('refused: could not write it to storage, so nothing was changed', 'bad'); return;
     }
     frames = data.frames; streamId = data.stream_id; board = nextBoard;
