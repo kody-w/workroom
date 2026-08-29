@@ -76,12 +76,16 @@ await page.click('#verify');
 await page.waitForTimeout(400);
 say('verify says', (await status()).replace(/\s+/g, ' ').trim().slice(0, 64));
 
-// the board is a projection: throw it away and replay
+// the board is a projection: rewind to the first frame and walk it forward again.
+// (this replaced the old Rebuild button, which only blinked and proved nothing)
 const before = await page.locator('.card').count();
-await page.click('#rebuild');
-await page.waitForTimeout(700);
+await page.locator('#scrub').fill('0'); await page.dispatchEvent('#scrub', 'input');
+await page.waitForTimeout(250);
+const atZero = await page.locator('.card').count();
+await page.click('#now'); await page.waitForTimeout(250);
 const after = await page.locator('.card').count();
-say('rebuild from frames', before === after ? `same board (${after} cards)` : `DIFFERED ${before} -> ${after}`);
+say('frame 0 is an empty world', String(atZero === 0));
+say('replayed back to the same board', before === after ? `same board (${after} cards)` : `DIFFERED ${before} -> ${after}`);
 
 // tamper: change a stored payload and confirm the chain refuses it
 await page.evaluate(() => {

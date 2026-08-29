@@ -28,6 +28,23 @@ primitives out of the shipped `index.html` and mints each example as a real
 chain. Each is its own stream, so switching between them is not a rollback of
 anything.
 
+## Watch the world be rebuilt
+
+Press **Replay from frame 0** and the board is thrown away and re-derived one
+frame at a time, from the genesis forward — the card each frame touches lights
+up, a line says who did what, and the ledger follows along. Or drag the scrubber
+and stand anywhere in the history you like.
+
+This is the claim being demonstrated rather than asserted. If the chain really is
+the record and the board really is only a projection of it, then every earlier
+board is still in there. Rewind far enough and you get an empty world; walk
+forward and you watch it fill, including a note being revised in place when the
+edit frame lands.
+
+While you are looking at an earlier frame the board is read-only — writing there
+would append to the head while showing you the past, and the card would appear to
+go somewhere it did not.
+
     node build-seeds.mjs      # regenerate and re-inject them
 
 ## Why the frames are real
