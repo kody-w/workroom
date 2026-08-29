@@ -47,6 +47,46 @@ go somewhere it did not.
 
     node build-seeds.mjs      # regenerate and re-inject them
 
+## Watch it do the work, and take the outputs out
+
+Press **▶ Dry run** and the agents work the board in front of you: they pick a
+card up out of Next, log what they did to it, and move it to Done — three real
+appended frames per card, at reading speed, with the card being worked lit up.
+
+Every card they finish **ejects a file out of the browser**. A work product per
+card, and a run receipt at the end, land in your downloads folder and in the
+**Outbox** pane, each with the sha256 of the bytes as written — so
+
+```
+shasum -a 256 ~/Downloads/workroom-presence-relay.md
+```
+
+has to print what the Outbox says. The work product names the exact frames that
+produced it and how to recompute their hashes; the receipt carries the run's
+whole chain plus every artifact and its hash, which is enough to re-verify the
+run without this page. It states the verdict honestly, including when the
+verdict is bad.
+
+Nothing invents itself at runtime and nothing leaves the machine. That is what
+makes it a *dry* run — but the frames, the files and the hashes are real
+production output, which is the only kind worth reviewing.
+
+Press it again to stop. The stop is final: the run holds a session object, not a
+flag, so a stopped run cannot be resurrected by a later one.
+
+## Start a new dimension from any frame
+
+Stand anywhere in the history and press **⑂ Fork from here**. That mints a *new*
+stream — a fresh rappid from random octets, never a hash of a name — whose
+genesis records exactly where it came from: the parent stream, the seq, and that
+frame's wave hash. The world at that frame is then **re-derived** as fresh
+frames rather than copied, so the new dimension is a first-class chain that
+verifies on its own terms.
+
+The dimension you left is not destroyed. It goes into the picker under
+*Dimensions you left*, and hopping back verifies it again before it is loaded —
+having been ours once is not a reason to trust it now.
+
 ## Why the frames are real
 
 Claiming rapp/1 is easy; the hashes have to agree with the reference or the
@@ -92,6 +132,21 @@ matter, because those are what a record has to survive:
 
 `shot.png` is the tampered state: the ledger shows the altered frame and the
 status bar names it.
+
+Five more drivers cover the rest, and each one asserts against something outside
+the app rather than against the app's own report:
+
+```
+node seedcheck.mjs     # the seeded boot and the switcher
+node replaycheck.mjs   # the scrubber, the read-only past, return to now
+node playcheck.mjs     # the animated replay, frame by frame
+node runcheck.mjs      # the dry run — sha256s the files that reached the DISK
+node forkcheck.mjs     # a fork is a new stream that knows its parent
+```
+
+`runcheck.mjs` catches every download the page starts, hashes the bytes that
+landed, and requires them to equal what the Outbox printed. A file the app
+described but did not write, or wrote differently, fails there.
 
 ## Import / export
 

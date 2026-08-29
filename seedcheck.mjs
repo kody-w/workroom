@@ -13,7 +13,7 @@ say('agent-authored cards visible', String(await p.locator('.who.agent').count()
 say('scenario picker options', String(await p.locator('#scenario option').count()));
 // flip to another scenario mid-work
 p.on('dialog', d => d.accept());
-await p.selectOption('#scenario', 'incident');
+await p.selectOption('#scenario', 'seed:incident');
 await p.waitForTimeout(700);
 say('after flip: cards', String(await p.locator('.card').count()));
 say('after flip: status', (await p.textContent('#status')).replace(/\s+/g,' ').trim().slice(0,66));
