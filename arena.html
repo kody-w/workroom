@@ -1,0 +1,873 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Frame Arena</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{
+    --bg:#05070a; --panel:#0a0e14; --line:#18202b; --ink:#eaf0f7; --dim:#6f8299;
+    --accent:#f97316; --ok:#4ade80; --bad:#ef4444;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow:hidden}
+  header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);
+         background:var(--panel);flex-wrap:wrap}
+  h1{font-size:13px;margin:0;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+  h1 span{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0}
+  .grow{flex:1}
+  button{font:inherit;font-size:12px;padding:5px 10px;border-radius:6px;border:1px solid var(--line);
+         background:#121a24;color:var(--ink);cursor:pointer}
+  button:hover{border-color:#26323f}
+  button.go{background:var(--accent);border-color:var(--accent);color:#1a0a02;font-weight:700}
+  button.hot{background:var(--bad);border-color:var(--bad);color:#1a0505;font-weight:700}
+  main{display:flex;height:calc(100% - 45px)}
+  #view{flex:1;min-width:0;position:relative;cursor:crosshair}
+  canvas{display:block;width:100%;height:100%}
+  #cross{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;pointer-events:none}
+  #cross::before,#cross::after{content:"";position:absolute;background:rgba(255,255,255,.82)}
+  #cross::before{left:10px;top:0;width:2px;height:8px;box-shadow:0 14px 0 rgba(255,255,255,.82)}
+  #cross::after{top:10px;left:0;height:2px;width:8px;box-shadow:14px 0 0 rgba(255,255,255,.82)}
+  #hud{position:absolute;left:16px;bottom:14px;font:12px/1.7 var(--mono);color:var(--dim);text-shadow:0 1px 4px #000;pointer-events:none}
+  #hud b{color:var(--ink);font-size:26px;font-weight:700;letter-spacing:-.01em}
+  #hpbar{width:200px;height:6px;background:#1a222c;border-radius:3px;overflow:hidden;margin-top:5px}
+  #hpfill{height:100%;background:linear-gradient(90deg,#ef4444,#f97316,#4ade80);transition:width .25s}
+  #feed{position:absolute;right:16px;top:14px;font:12px/1.8 var(--mono);text-align:right;pointer-events:none;text-shadow:0 1px 4px #000}
+  #feed div{opacity:.94}
+  #hurt{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle,transparent 42%,rgba(220,38,38,.62));opacity:0;transition:opacity .22s}
+  #flash{position:absolute;inset:0;pointer-events:none;background:#fff;opacity:0}
+  #dead{position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px;
+        background:rgba(4,6,10,.7);font-size:30px;font-weight:700}
+  #lockhint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;
+            background:rgba(4,6,10,.62);font-size:16px;cursor:pointer;text-align:center}
+  #lockhint small{color:var(--dim);font:12px var(--mono)}
+  aside{width:340px;flex:0 0 340px;border-left:1px solid var(--line);background:var(--panel);
+        display:flex;flex-direction:column;min-height:0}
+  .band{padding:8px 12px;border-bottom:1px solid var(--line)}
+  .band h2{margin:0 0 5px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
+  .kv{display:grid;grid-template-columns:70px 1fr;gap:1px 8px;font:11px/1.6 var(--mono)}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .kv div:nth-child(even){word-break:break-all}
+  .sb{display:flex;flex-direction:column;gap:3px;font:11.5px/1.6 var(--mono)}
+  .sb .r{display:flex;gap:8px;align-items:baseline}
+  .sb i{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+  .sb b{flex:1;font-weight:600}
+  .sb u{text-decoration:none;color:var(--dim)}
+  .wire{flex:1;overflow:auto;padding:6px 10px;font:11px/1.55 var(--mono)}
+  .fr{display:flex;gap:6px;padding:2px 5px;border-radius:4px;border-left:2px solid transparent}
+  .fr.new{background:#141b24;border-left-color:var(--accent)}
+  .fr .sq{color:var(--dim);min-width:30px;text-align:right}
+  .fr .ev{min-width:64px}
+  .fr .wv{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fr .wh{color:var(--accent)}
+  .stat{padding:6px 12px;border-top:1px solid var(--line);font:10.5px/1.5 var(--mono);color:var(--dim);min-height:28px}
+  .stat.ok{color:var(--ok)} .stat.bad{color:var(--bad)}
+  input[type=range]{width:100%}
+</style>
+
+<header>
+  <h1>Frame Arena <span>· every shot is a frame, and the match is its chain</span></h1>
+  <button id="bots" class="go">▶ Bots in</button>
+  <button id="replay">⏮ Replay the match</button>
+  <button id="fork">⑂ Fork from here</button>
+  <div class="grow"></div>
+  <button id="rec">● Record</button>
+  <button id="export">Export</button>
+  <button id="reset">New match</button>
+</header>
+
+<main>
+  <div id="view">
+    <div id="cross"></div>
+    <div id="hurt"></div>
+    <div id="flash"></div>
+    <div id="feed"></div>
+    <div id="hud"></div>
+    <div id="dead"></div>
+    <div id="lockhint"><div>Click to take the controls</div><small>W A S D move · mouse aim · click fire · R reload · Esc release</small></div>
+  </div>
+  <aside>
+    <div class="band"><h2>The match</h2><div class="kv" id="meta"></div></div>
+    <div class="band"><h2>Scoreboard</h2><div class="sb" id="sb"></div></div>
+    <div class="band"><h2>Stand anywhere in it</h2><input id="scrub" type="range" min="0" value="0" step="1"><div id="atframe" style="font:11px var(--mono);color:var(--dim)"></div></div>
+    <div class="wire" id="wire"></div>
+    <div class="stat" id="stat">…</div>
+  </aside>
+</main>
+
+<script>
+/* ── §4 canonicalization ─────────────────────────────────────────────────── */
+function canonical(v) {
+  if (v === null || typeof v === 'boolean') return JSON.stringify(v);
+  if (typeof v === 'number') {
+    if (!Number.isInteger(v)) throw new Error('floats are outside this profile; use ints or strings');
+    if (!Number.isSafeInteger(v)) throw new Error('int outside the interoperable range; carry it as a string');
+    return JSON.stringify(v);
+  }
+  if (typeof v === 'string') return wellFormed(v);
+  if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+  if (typeof v === 'object') {
+    // RFC 8785 orders member names by UTF-16 code units, which is exactly what
+    // JavaScript's default string sort does — the one place JS gets JCS for free.
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map(k => wellFormed(k) + ':' + canonical(v[k])).join(',') + '}';
+  }
+  throw new Error('non-I-JSON value: ' + typeof v);
+}
+// §4 refuses an unpaired surrogate rather than repairing it. JS would happily
+// escape a lone \uD800 and hash the result, but the reference implementation
+// emits the raw character — so the two would disagree on a string no human
+// typed and the frame would be unverifiable anywhere else. Refusing is the only
+// answer that keeps the hash meaningful.
+function wellFormed(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xD800 && c <= 0xDBFF) {
+      const n = s.charCodeAt(i + 1);
+      if (!(n >= 0xDC00 && n <= 0xDFFF)) throw new Error('unpaired surrogate — outside the I-JSON domain');
+      i++;
+    } else if (c >= 0xDC00 && c <= 0xDFFF) {
+      throw new Error('unpaired surrogate — outside the I-JSON domain');
+    }
+  }
+  return JSON.stringify(s);
+}
+
+/* ── §5 domain-separated content addressing ──────────────────────────────── */
+const enc = new TextEncoder();
+async function sha256Hex(bytes) {
+  const d = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function joinBytes(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0); out.set(b, a.length);
+  return out;
+}
+async function H(space, v) {
+  return sha256Hex(joinBytes(enc.encode(space + '\n'), enc.encode(canonical(v))));
+}
+async function Hb(space, bytes) {
+  return sha256Hex(joinBytes(enc.encode(space + '\n'), bytes));
+}
+
+// The hash the Outbox shows has to be the hash the reader can take. `shasum -a 256`
+// hashes the bytes and nothing else, so the artifact hash is a PLAIN sha256 — the
+// domain-separated H() is for frames, where the separation is the point, and printing
+// one while telling the reader to run the other is telling them to check the wrong thing.
+async function sha256Plain(bytes) { return sha256Hex(bytes); }
+
+/* ── §6 identity — minted once, from randomness ──────────────────────────── */
+async function mintStream() {
+  // §6.2 keyless: the tail is Hb over sixteen random octets. It is NOT derived
+  // from "@owner/slug" — a name-hash is the one thing the spec calls a cardinal
+  // sin, because two different things with the same name would collide.
+  const uuid = crypto.getRandomValues(new Uint8Array(16));
+  const tail = await Hb('rapp/1:rappid', uuid);
+  const instance = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
+  const rappid = `rappid:@${OWNER}/${SLUG}:${tail}`;
+  return `${rappid}:${instance.slice(0, 16)}`;      // memory-stream = rappid ":" instance
+}
+
+/* ── §7 the frame ────────────────────────────────────────────────────────── */
+function utcNow(floor) {
+  // exactly YYYY-MM-DDTHH:MM:SS.mmmZ — 24 bytes, three fractional digits
+  let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+  // §7.5 step 4 forbids time running backwards along a chain, and the reader
+  // enforced it while the writer did not — so one backward clock step (an NTP
+  // correction after sleep, a VM resume) wrote a frame the app then refused
+  // forever, with the board blank on every load and no way back but Reset.
+  // The comparison is bytewise on this fixed form, which is chronological.
+  if (floor && u < floor) u = floor;
+  return u;
+}
+async function buildFrame(streamId, seq, payload, prev, floorUtc) {
+  const payload_hash = await H('rapp/1:particle', payload);
+  const pre = {
+    spec: SPEC, kind: KIND, stream_id: streamId, seq, utc: utcNow(floorUtc),
+    payload, payload_hash,
+    prev,                     // predecessor's payload_hash (the worldline link)
+    prev_wave: null,          // §7.4: null on every memory stream, always
+  };
+  // the wave pre-image is the frame minus exactly frame_hash and sig
+  const frame_hash = await H('rapp/1:wave', pre);
+  return { ...pre, frame_hash, sig: null };
+}
+
+
+/* ── an arena that is a projection of its own record ─────────────────────────
+   Every spawn, step, shot, hit and death is one rapp/1 frame appended to a chain.
+   What you look at is that chain replayed. A shot you cannot find in the chain did
+   not happen, and a shot in the chain happened whatever the screen showed — which
+   is the point: the record is upstream of the picture, not a log written beside it.
+
+   Coordinates are integer tenths of a metre. §4 forbids floats, so a world that
+   cannot be canonicalized cannot be hashed, and a world that cannot be hashed is
+   not a record. Interpolation between frames is a rendering concern and stays out
+   of the chain. */
+const $ = (id) => document.getElementById(id);
+const SPEC = 'rapp/1', KIND = 'memory.save';
+const LS = { frames: 'arena.frames', stream: 'arena.stream' };
+const ARENA = 30;                  // metres across
+const LIM = ARENA * 5 - 8;         // tenths, minus a body's width
+const EVENTS = ['match.opened', 'player.spawned', 'player.moved', 'player.fired', 'player.hit', 'player.died'];
+const MAXHP = 100, DAMAGE = 34, MAG = 12;
+
+const BOTS = [
+  { id: 'atlas',  color: 0xfbbf24 },
+  { id: 'cipher', color: 0xa78bfa },
+  { id: 'scout',  color: 0x38bdf8 },
+  { id: 'spark',  color: 0xfb7185 },
+];
+const TINT = { you: 0xe2e8f0 };
+for (const b of BOTS) TINT[b.id] = b.color;
+
+let frames = [], streamId = null, W = null, viewAt = null, refused = null;
+let botTimer = null, playing = null;
+const stat = (m, c) => { const e = $('stat'); e.textContent = m; e.className = 'stat ' + (c || ''); };
+const load = (k) => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function utcNow(floor) {
+  let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+  if (floor && u < floor) u = floor;
+  return u;
+}
+const FUTURE_LIMIT = () => new Date(Date.now() + 864e5).toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+
+async function mintStream() {
+  const tail = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
+  const inst = await Hb('rapp/1:rappid', crypto.getRandomValues(new Uint8Array(16)));
+  return 'rappid:@kody-w/arena:' + tail + ':' + inst.slice(0, 16);
+}
+async function buildFrame(stream, seq, payload, prev, floorUtc) {
+  const payload_hash = await H('rapp/1:particle', payload);
+  const pre = { spec: SPEC, kind: KIND, stream_id: stream, seq, utc: utcNow(floorUtc),
+                payload, payload_hash, prev, prev_wave: null };
+  return { ...pre, frame_hash: await H('rapp/1:wave', pre), sig: null };
+}
+
+/* ── the projection ───────────────────────────────────────────────────────── */
+function project(list) {
+  const w = { p: {}, order: [], feed: [], shots: [] };
+  for (const f of list) {
+    const q = f.payload;
+    if (q.event === 'player.spawned') {
+      if (!w.p[q.who]) { w.p[q.who] = { who: q.who, kind: q.kind || 'bot', kills: 0, deaths: 0 }; w.order.push(q.who); }
+      const c = w.p[q.who];
+      c.x = q.x; c.z = q.z; c.ry = q.ry || 0; c.hp = MAXHP; c.ammo = MAG; c.alive = true; c.at = f.seq;
+    } else if (q.event === 'player.moved') {
+      const c = w.p[q.who]; if (!c || !c.alive) continue;
+      c.x = q.x; c.z = q.z; if (typeof q.ry === 'number') c.ry = q.ry;
+    } else if (q.event === 'player.fired') {
+      const c = w.p[q.who]; if (!c || !c.alive) continue;
+      c.ammo = q.reload ? MAG : Math.max(0, c.ammo - 1);
+      if (!q.reload) w.shots.push({ who: q.who, x: c.x, z: c.z, ry: c.ry, hit: q.hit || null, seq: f.seq });
+      if (w.shots.length > 40) w.shots.shift();
+    } else if (q.event === 'player.hit') {
+      const c = w.p[q.who]; if (!c || !c.alive) continue;
+      c.hp = Math.max(0, c.hp - (q.damage || DAMAGE));
+      c.lastHitBy = q.by; c.hurtAt = f.seq;
+    } else if (q.event === 'player.died') {
+      const c = w.p[q.who]; if (!c) continue;
+      c.alive = false; c.hp = 0; c.deaths++;
+      const k = w.p[q.by]; if (k && q.by !== q.who) k.kills++;
+      w.feed.push({ by: q.by, who: q.who, seq: f.seq });
+      if (w.feed.length > 8) w.feed.shift();
+    }
+  }
+  return w;
+}
+
+// The append door enforces exactly what the verify door enforces. Anything less and
+// the app can write a frame it will refuse to load — a record that bricks itself.
+function payloadObjection(q, list) {
+  if (!isObj(q)) return 'not a payload';
+  if (!EVENTS.includes(q.event)) return 'not an event this arena knows';
+  if (!list.length) return q.event === 'match.opened' ? null : 'a match begins at its genesis';
+  if (q.event === 'match.opened') return 'a genesis can only be the first frame';
+  if (typeof q.who !== 'string' || !q.who) return 'that names nobody';
+  const w = project(list);
+  const c = w.p[q.who];
+  if (q.event === 'player.spawned') {
+    if (c && c.alive) return 'already alive in this match';
+    if (!Number.isSafeInteger(q.x) || !Number.isSafeInteger(q.z)) return 'a position must be whole tenths';
+    if (Math.abs(q.x) > LIM || Math.abs(q.z) > LIM) return 'outside the arena';
+    return null;
+  }
+  if (!c) return 'never spawned';
+  if (!c.alive) return 'is down — a dead player does nothing until it spawns again';
+  if (q.event === 'player.moved') {
+    if (!Number.isSafeInteger(q.x) || !Number.isSafeInteger(q.z)) return 'a position must be whole tenths';
+    if (Math.abs(q.x) > LIM || Math.abs(q.z) > LIM) return 'outside the arena';
+    // no teleporting: a step is bounded, and the bound is in the RECORD, not the renderer
+    if (Math.hypot(q.x - c.x, q.z - c.z) > 26) return 'that is further than a step';
+    return null;
+  }
+  if (q.event === 'player.fired') {
+    if (!q.reload && c.ammo <= 0) return 'the magazine is empty';
+    if (q.hit != null && !w.p[q.hit]) return 'shot somebody who is not here';
+    return null;
+  }
+  if (q.event === 'player.hit') {
+    if (typeof q.by !== 'string' || !w.p[q.by]) return 'hit by nobody';
+    if (!Number.isSafeInteger(q.damage) || q.damage <= 0 || q.damage > 100) return 'that is not a damage';
+    return null;
+  }
+  if (q.event === 'player.died') {
+    if (typeof q.by !== 'string' || !w.p[q.by]) return 'killed by nobody';
+    if (c.hp > 0) return 'is not down';
+    return null;
+  }
+  return null;
+}
+
+async function verifyChain(list, expectStream) {
+  const problems = [];
+  if (!Array.isArray(list)) return ['that is not a chain'];
+  const KEYS = ['frame_hash','kind','payload','payload_hash','prev','prev_wave','seq','sig','spec','stream_id','utc'].join(',');
+  let prev = null;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    try {
+      if (!isObj(f)) { problems.push('frame ' + i + ': not an object'); continue; }
+      if (Object.keys(f).sort().join(',') !== KEYS) { problems.push('frame ' + i + ': key set is not the eleven'); continue; }
+      if (f.spec !== SPEC) problems.push('frame ' + i + ': not ' + SPEC);
+      if (f.kind !== KIND) problems.push('frame ' + i + ': kind is not ' + KIND);
+      if (expectStream && f.stream_id !== expectStream) problems.push('frame ' + i + ': a different stream');
+      if (f.seq !== i) problems.push('frame ' + i + ': seq is ' + f.seq);
+      if (f.sig !== null) problems.push('frame ' + i + ': sig must be null');
+      if (f.prev_wave !== null) problems.push('frame ' + i + ': prev_wave must be null');
+      if (f.prev !== (prev ? prev.payload_hash : null)) problems.push('frame ' + i + ': prev does not link');
+      if (prev && f.utc < prev.utc) problems.push('frame ' + i + ': time runs backwards');
+      if (f.utc > FUTURE_LIMIT()) problems.push('frame ' + i + ': far in the future');
+      const o = payloadObjection(f.payload, list.slice(0, i));
+      if (o) problems.push('frame ' + i + ': ' + o);
+      if (await H('rapp/1:particle', f.payload) !== f.payload_hash) problems.push('frame ' + i + ': payload_hash does not match');
+      const pre = { ...f }; delete pre.frame_hash; delete pre.sig;
+      if (await H('rapp/1:wave', pre) !== f.frame_hash) problems.push('frame ' + i + ': frame_hash does not match');
+      prev = f;
+    } catch (e) { problems.push('frame ' + i + ': refused — ' + e.message); }
+  }
+  if (!list.length) problems.push('a match begins at its genesis');
+  else if (!isObj(list[0].payload) || list[0].payload.event !== 'match.opened') problems.push('the first frame is not a genesis');
+  return problems;
+}
+
+let q = Promise.resolve();
+function append(payload) { const r = q.then(() => appendOne(payload)); q = r.then(() => {}, () => {}); return r; }
+async function appendOne(payload) {
+  if (refused) return null;
+  if (viewAt !== null) return null;
+  const o = payloadObjection(payload, frames);
+  if (o) { stat('refused — ' + payload.event + ': ' + o, 'bad'); return null; }
+  const prev = frames[frames.length - 1] || null;
+  const f = await buildFrame(streamId, frames.length, payload, prev ? prev.payload_hash : null, prev ? prev.utc : null);
+  const disk = load(LS.frames), ds = load(LS.stream);
+  const dh = Array.isArray(disk) && disk.length && isObj(disk[disk.length - 1]) ? disk[disk.length - 1].frame_hash : null;
+  const mine = frames.length ? frames[frames.length - 1].frame_hash : null;
+  const bothEmpty = (!Array.isArray(disk) || !disk.length) && !frames.length;
+  if (!bothEmpty && (ds !== streamId || dh !== mine)) {
+    refused = 'another tab is playing this match — reload before acting here';
+    stat(refused, 'bad'); return null;
+  }
+  frames.push(f);
+  if (!save(LS.frames, frames) || !save(LS.stream, streamId)) {
+    frames.pop(); stat('the chain could not be written — that action was refused, not saved', 'bad'); return null;
+  }
+  W = project(frames);
+  paintWire(f); paintMeta(); paintScore();
+  return f;
+}
+
+/* ── the arena ────────────────────────────────────────────────────────────── */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070a);
+scene.fog = new THREE.FogExp2(0x05070a, 0.013);
+const camera = new THREE.PerspectiveCamera(75, 1, 0.06, 260);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+$('view').append(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x93a9c4, 0.78));
+const sun = new THREE.DirectionalLight(0xffd9b0, 0.95); sun.position.set(10, 20, 6); scene.add(sun);
+for (const [x, z, c] of [[-9, -9, 0xf97316], [9, -9, 0x38bdf8], [-9, 9, 0xa78bfa], [9, 9, 0x4ade80]]) {
+  const l = new THREE.PointLight(c, 2.4, 34); l.position.set(x, 4, z); scene.add(l);
+  const b = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), new THREE.MeshBasicMaterial({ color: c }));
+  b.position.set(x, 4, z); scene.add(b);
+}
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, ARENA),
+  new THREE.MeshStandardMaterial({ color: 0x1b2735, roughness: 0.86, metalness: 0.1 }));
+floor.rotation.x = -Math.PI / 2; scene.add(floor);
+const grid = new THREE.GridHelper(ARENA, ARENA, 0x3d5c7a, 0x24384c);
+grid.position.y = 0.01; scene.add(grid);      // Object3D.position is read-only; set through it
+
+// cover, laid out deterministically so every replay and every fork sees the same arena
+const COVER = [[-6,-3,3,2.4],[6,3,3,2.4],[0,-8,5,1.6],[0,8,5,1.6],[-9,4,1.6,3.2],[9,-4,1.6,3.2],[3,-2,1.4,1.4],[-3,2,1.4,1.4]];
+for (const [x, z, w, h] of COVER) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 1.2),
+    new THREE.MeshStandardMaterial({ color: 0x33465c, roughness: 0.72 }));
+  m.position.set(x, h / 2, z); scene.add(m);
+}
+// Four panels, not a closed box. A BackSide box has a lid, and the spectator camera
+// sits above the arena — it was looking through the underside of the roof at a dark
+// cone, which reads as a broken renderer rather than a room.
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x223244, roughness: 0.95 });
+for (const [x, z, ry] of [[0, -ARENA / 2, 0], [0, ARENA / 2, Math.PI], [-ARENA / 2, 0, Math.PI / 2], [ARENA / 2, 0, -Math.PI / 2]]) {
+  const w = new THREE.Mesh(new THREE.PlaneGeometry(ARENA, 5), wallMat);
+  w.position.set(x, 2.5, z); w.rotation.y = ry; scene.add(w);
+}
+
+const actors = new THREE.Group(); scene.add(actors);
+const fx = new THREE.Group(); scene.add(fx);
+const GEO = {
+  body: new THREE.CylinderGeometry(0.3, 0.36, 1.2, 14),
+  head: new THREE.SphereGeometry(0.24, 14, 12),
+  gun:  new THREE.BoxGeometry(0.12, 0.12, 0.6),
+  ring: new THREE.RingGeometry(0.44, 0.56, 24),
+};
+
+// the weapon you are holding, parented to the camera
+const view = new THREE.Group(); camera.add(view); scene.add(camera);
+{
+  const g = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.62),
+    new THREE.MeshStandardMaterial({ color: 0x232f3d, roughness: 0.5, metalness: 0.5 }));
+  g.position.set(0.19, -0.18, -0.46); view.add(g);
+  const b = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 10),
+    new THREE.MeshStandardMaterial({ color: 0x39485a, metalness: 0.7, roughness: 0.35 }));
+  b.rotation.x = Math.PI / 2; b.position.set(0.19, -0.15, -0.82); view.add(b);
+  const muzzle = new THREE.PointLight(0xffb457, 0, 7); muzzle.position.set(0.19, -0.15, -1.0); view.add(muzzle);
+  view.userData.muzzle = muzzle;
+}
+
+const lerp = new Map();
+const P = (t) => t / 10;
+function drawWorld(w) {
+  while (actors.children.length) {
+    const c = actors.children.pop();
+    if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); }
+    actors.remove(c);   // the shared geometries stay: every other body rides them
+  }
+  const now = performance.now();
+  const seq = viewAt === null ? frames.length - 1 : viewAt;
+  for (const id of w.order) {
+    const c = w.p[id]; if (!c) continue;
+    if (id === 'you' && lockedIn && viewAt === null) continue;      // you are the camera
+    let x = P(c.x), z = P(c.z);
+    const a = lerp.get(id);
+    if (a) {
+      const k = Math.min(1, (now - a.t0) / 320);
+      x = P(a.from.x + (a.to.x - a.from.x) * k); z = P(a.from.z + (a.to.z - a.from.z) * k);
+    }
+    const tint = TINT[id] || 0x94a3b8;
+    if (!c.alive) {
+      const m = new THREE.Mesh(GEO.body, new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 }));
+      m.position.set(x, 0.2, z); m.rotation.z = Math.PI / 2; actors.add(m);
+      continue;
+    }
+    const hurt = c.hurtAt != null && seq - c.hurtAt < 3;
+    const mat = new THREE.MeshStandardMaterial({ color: hurt ? 0xff6b6b : tint, emissive: tint,
+                                                 emissiveIntensity: hurt ? 0.85 : 0.22, roughness: 0.5 });
+    const b = new THREE.Mesh(GEO.body, mat); b.position.set(x, 0.7, z); b.rotation.y = c.ry / 100; actors.add(b);
+    const h = new THREE.Mesh(GEO.head, mat); h.position.set(x, 1.56, z); actors.add(h);
+    const g = new THREE.Mesh(GEO.gun, new THREE.MeshStandardMaterial({ color: 0x2b3947, metalness: 0.6, roughness: 0.4 }));
+    g.position.set(x + Math.sin(c.ry / 100) * 0.45, 1.15, z + Math.cos(c.ry / 100) * 0.45);
+    g.rotation.y = c.ry / 100; actors.add(g);
+    const r = new THREE.Mesh(GEO.ring, new THREE.MeshBasicMaterial({ color: tint, side: THREE.DoubleSide, transparent: true, opacity: 0.42 }));
+    r.position.set(x, 0.03, z); r.rotation.x = -Math.PI / 2; actors.add(r);
+    // health, above the head, straight off the projection
+    const bar = new THREE.Mesh(new THREE.PlaneGeometry(0.9 * (c.hp / MAXHP), 0.09),
+      new THREE.MeshBasicMaterial({ color: c.hp > 60 ? 0x4ade80 : c.hp > 30 ? 0xfbbf24 : 0xef4444, side: THREE.DoubleSide }));
+    bar.position.set(x, 2.0, z); bar.lookAt(camera.position); actors.add(bar);
+  }
+  // tracers for the shots in the last few frames — drawn from the frames, not from events
+  while (fx.children.length) { const c = fx.children.pop(); if (c.material) c.material.dispose(); if (c.geometry) c.geometry.dispose(); fx.remove(c); }
+  for (const s of w.shots) {
+    const age = seq - s.seq;
+    if (age > 2 || age < 0) continue;
+    const from = new THREE.Vector3(P(s.x), 1.15, P(s.z));
+    const dir = new THREE.Vector3(Math.sin(s.ry / 100), 0, Math.cos(s.ry / 100));
+    const to = s.hit && w.p[s.hit] ? new THREE.Vector3(P(w.p[s.hit].x), 1.2, P(w.p[s.hit].z))
+                                   : from.clone().add(dir.multiplyScalar(30));
+    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    fx.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: s.hit ? 0xff6b3d : 0xffd9a0,
+                                                             transparent: true, opacity: 0.85 - age * 0.35 })));
+    if (s.hit && w.p[s.hit]) {
+      const spark = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffb457 }));
+      spark.position.copy(to); fx.add(spark);
+    }
+  }
+}
+function planLerp(before, after) {
+  lerp.clear(); if (!before) return;
+  const t0 = performance.now();
+  for (const id of after.order) {
+    const a = before.p[id], b = after.p[id];
+    if (a && b && a.alive && b.alive && (a.x !== b.x || a.z !== b.z)) lerp.set(id, { from: { x: a.x, z: a.z }, to: { x: b.x, z: b.z }, t0 });
+  }
+}
+
+/* ── you ──────────────────────────────────────────────────────────────────── */
+let lockedIn = false, yaw = 0, pitch = 0;
+const held = new Set();
+$('view').addEventListener('click', () => { if (!lockedIn) renderer.domElement.requestPointerLock(); else fire(); });
+document.addEventListener('pointerlockchange', () => {
+  lockedIn = document.pointerLockElement === renderer.domElement;
+  $('lockhint').style.display = lockedIn ? 'none' : 'flex';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!lockedIn) return;
+  yaw -= e.movementX * 0.0022;
+  pitch = clamp(pitch - e.movementY * 0.0022, -1.2, 1.2);
+});
+addEventListener('keydown', e => { held.add(e.key.toLowerCase()); if (e.key.toLowerCase() === 'r') reload(); });
+addEventListener('keyup', e => held.delete(e.key.toLowerCase()));
+
+let lastStep = 0;
+async function stepYou() {
+  if (!W || viewAt !== null || refused) return;
+  const me = W.p['you']; if (!me || !me.alive) return;
+  const now = performance.now();
+  if (now - lastStep < 130) return;
+  let dx = 0, dz = 0;
+  if (held.has('w')) dz += 1; if (held.has('s')) dz -= 1;
+  if (held.has('a')) dx -= 1; if (held.has('d')) dx += 1;
+  const ry = Math.round(yaw * 100);
+  if (!dx && !dz) {
+    if (Math.abs(ry - me.ry) > 12) { lastStep = now; const b = W; await append({ event: 'player.moved', who: 'you', x: me.x, z: me.z, ry }); planLerp(b, W); }
+    return;
+  }
+  lastStep = now;
+  const s = Math.sin(yaw), c = Math.cos(yaw);
+  const nx = clamp(Math.round(me.x + (dx * c + dz * s) * 9), -LIM, LIM);
+  const nz = clamp(Math.round(me.z + (dz * c - dx * s) * 9), -LIM, LIM);
+  const before = W;
+  await append({ event: 'player.moved', who: 'you', x: nx, z: nz, ry });
+  planLerp(before, W);
+}
+
+// A shot resolves against the PROJECTION — the same world everybody else is in —
+// and the hit it claims is written into the frame, so a replay lands the same shot.
+function traceFrom(who, x, z, ry, w) {
+  let best = null, bestD = Infinity;
+  const dir = { x: Math.sin(ry / 100), z: Math.cos(ry / 100) };
+  for (const id of w.order) {
+    if (id === who) continue;
+    const t = w.p[id]; if (!t || !t.alive) continue;
+    const vx = (t.x - x) / 10, vz = (t.z - z) / 10;
+    const d = Math.hypot(vx, vz);
+    if (d < 0.2 || d > 34) continue;
+    const along = (vx * dir.x + vz * dir.z);
+    if (along <= 0) continue;
+    const off = Math.abs(vx * dir.z - vz * dir.x);       // perpendicular distance
+    if (off > 0.75) continue;                            // the width of a body
+    if (d < bestD) { bestD = d; best = id; }
+  }
+  return best;
+}
+
+let firing = false;
+async function fire() {
+  if (firing || !W || viewAt !== null || refused) return;
+  const me = W.p['you']; if (!me || !me.alive) return;
+  if (me.ammo <= 0) { stat('empty — press R', 'bad'); return; }
+  firing = true; setTimeout(() => firing = false, 130);
+  const hit = traceFrom('you', me.x, me.z, Math.round(yaw * 100), W);
+  muzzleFlash();
+  await append({ event: 'player.fired', who: 'you', hit: hit || null });
+  if (hit) await resolveHit(hit, 'you');
+}
+async function reload() {
+  if (!W || viewAt !== null) return;
+  const me = W.p['you']; if (!me || !me.alive || me.ammo === MAG) return;
+  await append({ event: 'player.fired', who: 'you', reload: true });
+  stat('reloaded', 'ok');
+}
+// A hit and a death are separate frames on purpose: the damage is a fact, and the
+// death is a consequence of the damage that the record has to be able to show.
+async function resolveHit(target, by) {
+  await append({ event: 'player.hit', who: target, by, damage: DAMAGE });
+  const t = W.p[target];
+  if (t && t.hp <= 0) {
+    await append({ event: 'player.died', who: target, by });
+    setTimeout(() => respawn(target), 2600);
+  }
+}
+async function respawn(who) {
+  if (!W || viewAt !== null || refused) return;
+  const c = W.p[who]; if (!c || c.alive) return;
+  const a = Math.random() * Math.PI * 2, r = 60 + Math.random() * 70;
+  await append({ event: 'player.spawned', who, kind: c.kind,
+                 x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
+                 z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: Math.round(-a * 100) });
+}
+
+function muzzleFlash() {
+  const m = view.userData.muzzle;
+  m.intensity = 4.5;
+  view.position.z = 0.08;
+  setTimeout(() => { m.intensity = 0; view.position.z = 0; }, 70);
+  const f = $('flash'); f.style.opacity = '.14';
+  setTimeout(() => f.style.opacity = '0', 60);
+}
+
+/* ── the bots ─────────────────────────────────────────────────────────────── */
+// They act through the SAME door you do. There is no privileged path, which is the
+// only reason a bot's kill and yours are the same kind of fact.
+let turn = 0;
+async function botTick() {
+  if (!W || viewAt !== null || refused) return;
+  const b = BOTS[turn++ % BOTS.length];
+  const c = W.p[b.id];
+  if (!c) {
+    const a = Math.random() * Math.PI * 2, r = 70 + Math.random() * 60;
+    await append({ event: 'player.spawned', who: b.id, kind: 'bot',
+                   x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
+                   z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: 0 });
+    return;
+  }
+  if (!c.alive) { respawn(b.id); return; }
+  if (c.ammo <= 0) { await append({ event: 'player.fired', who: b.id, reload: true }); return; }
+
+  // find the nearest living body and turn toward it
+  let target = null, bestD = Infinity;
+  for (const id of W.order) {
+    if (id === b.id) continue;
+    const t = W.p[id]; if (!t || !t.alive) continue;
+    const d = Math.hypot(t.x - c.x, t.z - c.z);
+    if (d < bestD) { bestD = d; target = t; }
+  }
+  const before = W;
+  if (!target) return;
+  const want = Math.round(Math.atan2(target.x - c.x, target.z - c.z) * 100);
+  const aimed = Math.abs(((want - c.ry + 314) % 628) - 314) < 22;
+  if (aimed && bestD < 200 && Math.random() < 0.6) {
+    const hit = traceFrom(b.id, c.x, c.z, c.ry, W);
+    await append({ event: 'player.fired', who: b.id, hit: hit || null });
+    if (hit) await resolveHit(hit, b.id);
+    return;
+  }
+  // close the distance, turning as it goes — one step, inside the record's own bound
+  const dx = Math.sign(target.x - c.x) * (8 + Math.floor(Math.random() * 8));
+  const dz = Math.sign(target.z - c.z) * (8 + Math.floor(Math.random() * 8));
+  await append({ event: 'player.moved', who: b.id,
+                 x: clamp(c.x + (bestD > 40 ? dx : -dx), -LIM, LIM),
+                 z: clamp(c.z + (bestD > 40 ? dz : -dz), -LIM, LIM), ry: want });
+  planLerp(before, W);
+}
+function setBots(on) {
+  if (botTimer) { clearInterval(botTimer); botTimer = null; }
+  if (on) botTimer = setInterval(botTick, 420);
+  $('bots').textContent = botTimer ? '■ Bots out' : '▶ Bots in';
+  $('bots').classList.toggle('hot', !!botTimer);
+}
+$('bots').onclick = () => setBots(!botTimer);
+
+/* ── replay and fork ──────────────────────────────────────────────────────── */
+function viewed() { return viewAt === null ? W : project(frames.slice(0, viewAt + 1)); }
+function seekTo(i) {
+  viewAt = clamp(i, 0, frames.length - 1);
+  if (viewAt === frames.length - 1) viewAt = null;
+  paintMeta(); paintScore();
+  $('scrub').value = String(viewAt === null ? frames.length - 1 : viewAt);
+}
+$('scrub').oninput = () => { stopPlay(); seekTo(Number($('scrub').value)); };
+function stopPlay() { if (playing) { clearInterval(playing); playing = null; $('replay').textContent = '⏮ Replay the match'; } }
+$('replay').onclick = () => {
+  if (playing) { stopPlay(); viewAt = null; paintMeta(); return; }
+  viewAt = 0; $('replay').textContent = '■ Stop the replay';
+  playing = setInterval(() => {
+    if (viewAt === null || viewAt >= frames.length - 1) { stopPlay(); viewAt = null; paintMeta(); paintScore(); return; }
+    const before = viewed(); viewAt++; planLerp(before, viewed());
+    paintMeta(); paintScore(); $('scrub').value = String(viewAt);
+  }, 180);
+};
+$('fork').onclick = async () => {
+  const at = viewAt === null ? frames.length - 1 : viewAt;
+  const w = project(frames.slice(0, at + 1));
+  if (!confirm('Play on from frame ' + at + '?\n\nEverybody standing there comes with you, into a new match that records where it came from.')) return;
+  const from = { stream_id: streamId, seq: frames[at].seq, frame_hash: frames[at].frame_hash };
+  const stream = await mintStream();
+  const evs = [{ event: 'match.opened', title: 'Frame Arena · from frame ' + at, from }];
+  for (const id of w.order) {
+    const c = w.p[id];
+    evs.push({ event: 'player.spawned', who: id, kind: c.kind, x: c.x, z: c.z, ry: c.ry });
+  }
+  let next = [], prev = null;
+  for (const [i, pl] of evs.entries()) {
+    const f = await buildFrame(stream, i, pl, prev ? prev.payload_hash : null, prev ? prev.utc : null);
+    next.push(f); prev = f;
+  }
+  const problems = await verifyChain(next, stream);
+  if (problems.length) { stat('the fork does not verify — ' + problems[0], 'bad'); return; }
+  if (!save(LS.frames, next) || !save(LS.stream, stream)) { stat('could not write the new match', 'bad'); return; }
+  stopPlay(); frames = next; streamId = stream; W = project(frames); viewAt = null; refused = null;
+  $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+  paintMeta(); paintScore();
+  stat('a new match, live from frame ' + at + ' of the one before it — everyone at full health', 'ok');
+};
+
+/* ── panels ───────────────────────────────────────────────────────────────── */
+const NAME = { 'match.opened':'match', 'player.spawned':'spawned', 'player.moved':'moved',
+               'player.fired':'fired', 'player.hit':'hit', 'player.died':'died' };
+const esc = (x) => String(x == null ? '' : x).replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' })[c]);
+function paintWire(f, quiet) {
+  const w = $('wire');
+  const d = document.createElement('div');
+  d.className = 'fr' + (quiet ? '' : ' new');
+  const p = f.payload;
+  const what = p.event === 'player.fired' ? (p.reload ? 'reload' : (p.hit ? '→ ' + p.hit : 'missed'))
+             : p.event === 'player.hit' ? ('-' + p.damage + ' by ' + p.by)
+             : p.event === 'player.died' ? ('by ' + p.by)
+             : p.event === 'player.moved' || p.event === 'player.spawned' ? (p.x / 10).toFixed(1) + ', ' + (p.z / 10).toFixed(1)
+             : (p.title || '');
+  d.innerHTML = '<span class="sq">' + f.seq + '</span><span class="ev">' + (NAME[p.event] || '?') + '</span>'
+              + '<span class="wv">' + esc((p.who ? p.who + ' ' : '') + what) + '</span>'
+              + '<span class="wh">' + f.frame_hash.slice(0, 6) + '</span>';
+  w.append(d);
+  if (!quiet) setTimeout(() => d.classList.remove('new'), 900);
+  while (w.children.length > 500) w.removeChild(w.firstChild);
+  w.scrollTop = w.scrollHeight;
+}
+function paintMeta() {
+  const head = frames[frames.length - 1];
+  const origin = frames[0] && frames[0].payload && frames[0].payload.from;
+  const rows = [['spec', SPEC + ' (rev-6)'], ['stream', streamId || '—'], ['frames', String(frames.length)],
+                ['head wave', head ? head.frame_hash.slice(0, 40) + '…' : '—']];
+  if (origin) rows.push(['forked at', 'frame ' + origin.seq]);
+  $('meta').innerHTML = rows.map(([k, v]) => '<div>' + k + '</div><div>' + esc(v) + '</div>').join('');
+  $('scrub').max = String(Math.max(0, frames.length - 1));
+  if (viewAt === null) $('scrub').value = String(frames.length - 1);
+  $('atframe').textContent = viewAt === null ? 'at now' : 'frame ' + viewAt + ' — the match as it stood';
+}
+function paintScore() {
+  const w = viewed(); if (!w) return;
+  const rows = [...w.order].sort((a, b) => (w.p[b].kills - w.p[a].kills) || (w.p[a].deaths - w.p[b].deaths));
+  $('sb').innerHTML = rows.map(id => {
+    const c = w.p[id];
+    return '<div class="r"><i style="background:#' + (TINT[id] || 0x94a3b8).toString(16).padStart(6, '0')
+         + (c.alive ? '' : ';opacity:.3') + '"></i><b>' + esc(id) + '</b>'
+         + '<u>' + c.kills + ' / ' + c.deaths + (c.alive ? '' : ' · down') + '</u></div>';
+  }).join('');
+  $('feed').innerHTML = w.feed.slice(-6).map(f =>
+    '<div><span style="color:#' + (TINT[f.by] || 0x94a3b8).toString(16).padStart(6, '0') + '">' + esc(f.by)
+    + '</span> <span style="color:#6f8299">✕</span> <span style="color:#' + (TINT[f.who] || 0x94a3b8).toString(16).padStart(6, '0')
+    + '">' + esc(f.who) + '</span></div>').join('');
+  const me = w.p['you'];
+  if (me) {
+    $('hud').innerHTML = '<b>' + me.hp + '</b> health<br>' + me.ammo + ' / ' + MAG + ' rounds · '
+      + me.kills + ' down · frame ' + (viewAt === null ? frames.length - 1 : viewAt)
+      + '<div id="hpbar"><div id="hpfill" style="width:' + (me.hp / MAXHP * 100) + '%"></div></div>';
+    $('dead').style.display = me.alive ? 'none' : 'flex';
+    if (!me.alive) $('dead').textContent = 'DOWN — ' + (me.lastHitBy ? 'by ' + me.lastHitBy : '') + ' · back in a moment';
+    const seq = viewAt === null ? frames.length - 1 : viewAt;
+    if (me.hurtAt != null && seq - me.hurtAt < 2) {
+      $('hurt').style.opacity = String(0.75 - me.hp / MAXHP * 0.45);
+      setTimeout(() => $('hurt').style.opacity = '0', 220);
+    }
+  }
+}
+
+/* ── export / reset / record ──────────────────────────────────────────────── */
+$('export').onclick = () => {
+  const u = URL.createObjectURL(new Blob([JSON.stringify({ stream_id: streamId, frames }, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = u; a.download = 'frame-arena-match.json'; document.body.append(a); a.click(); a.remove();
+  stat('the match handed to your browser as its chain', 'ok');
+};
+$('reset').onclick = async () => {
+  if (!confirm('Start a new match?\n\nThis discards the record in this browser. Export first if you want it.')) return;
+  setBots(false); stopPlay(); viewAt = null; refused = null;
+  localStorage.removeItem(LS.frames); localStorage.removeItem(LS.stream);
+  frames = []; streamId = await mintStream(); $('wire').innerHTML = '';
+  await openMatch();
+  stat('a new match, minted from randomness', 'ok');
+};
+let recorder = null, chunks = [], recStart = 0;
+$('rec').onclick = () => {
+  if (recorder) { try { recorder.stop(); } catch (e) {} return; }
+  if (!window.MediaRecorder || !renderer.domElement.captureStream) { stat('this browser will not record a canvas', 'bad'); return; }
+  const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  chunks = [];
+  recorder = new MediaRecorder(renderer.domElement.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 8_000_000 } : {});
+  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  recorder.onstop = async () => {
+    const secs = Math.max(1, Math.round((Date.now() - recStart) / 1000));
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+    recorder = null; chunks = [];
+    $('rec').textContent = '● Record'; $('rec').classList.remove('hot');
+    if (!blob.size) { stat('the recorder produced nothing', 'bad'); return; }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const name = 'frame-arena-' + stamp + '.webm';
+    for (const [n, bl] of [[name, blob], [name.replace(/\.webm$/, '.frames.json'),
+        new Blob([JSON.stringify({ recording: name, seconds: secs, stream_id: streamId, frames }, null, 2)], { type: 'application/json' })]]) {
+      const u = URL.createObjectURL(bl);
+      const a = document.createElement('a'); a.href = u; a.download = n; document.body.append(a); a.click(); a.remove();
+    }
+    const d = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    const hex = [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, '0')).join('');
+    stat('saved ' + name + ' (' + secs + 's) with the chain that produced it · sha256 ' + hex.slice(0, 20) + '…', 'ok');
+  };
+  recorder.start(1000); recStart = Date.now();
+  $('rec').textContent = '■ Stop and save'; $('rec').classList.add('hot');
+};
+
+/* ── loop ─────────────────────────────────────────────────────────────────── */
+function resize() {
+  const w = $('view').clientWidth, h = $('view').clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / Math.max(1, h); camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+function tick() {
+  requestAnimationFrame(tick);
+  stepYou();
+  const w = viewed();
+  if (w) drawWorld(w);
+  const me = w && w.p['you'];
+  if (lockedIn && viewAt === null && me) {
+    camera.position.set(P(me.x), 1.5, P(me.z));
+    camera.rotation.set(pitch, yaw, 0, 'YXZ');
+    view.visible = me.alive;
+  } else {
+    // an overhead seat when you are not driving, so a replay is watchable
+    camera.position.set(0, 26, 26); camera.rotation.set(-0.79, 0, 0, 'YXZ'); view.visible = false;
+  }
+  renderer.render(scene, camera);
+}
+
+async function openMatch() {
+  await append({ event: 'match.opened', title: 'Frame Arena' });
+  await append({ event: 'player.spawned', who: 'you', kind: 'person', x: 0, z: 110, ry: 0 });
+  for (const b of BOTS) {
+    const a = Math.random() * Math.PI * 2, r = 80 + Math.random() * 50;
+    await append({ event: 'player.spawned', who: b.id, kind: 'bot',
+                   x: clamp(Math.round(Math.cos(a) * r), -LIM, LIM),
+                   z: clamp(Math.round(Math.sin(a) * r), -LIM, LIM), ry: Math.round(-a * 100) });
+  }
+}
+
+(async function boot() {
+  const disk = load(LS.frames), ds = load(LS.stream);
+  if (Array.isArray(disk) && disk.length && typeof ds === 'string') {
+    const problems = await verifyChain(disk, ds);
+    if (problems.length) {
+      frames = disk; streamId = ds;
+      refused = 'this match does not verify — ' + problems[0] + '. Nothing will be written until you start a new one.';
+      stat(refused, 'bad');
+    } else {
+      frames = disk; streamId = ds;
+      $('wire').innerHTML = ''; for (const f of frames) paintWire(f, true);
+    }
+  }
+  if (!frames.length) { streamId = await mintStream(); await openMatch(); }
+  W = project(frames);
+  const me = W.p['you']; if (me) yaw = me.ry / 100;
+  paintMeta(); paintScore();
+  resize(); tick();
+  if (!refused) stat(frames.length + ' frames, all verified — click to take the controls, or send the bots in', 'ok');
+})();
+</script>

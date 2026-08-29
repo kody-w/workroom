@@ -174,6 +174,31 @@ The studio holds its own copy of the canonicalizer, because two readers of the s
 wire must canonicalize identically. `verify_parity.mjs` fails if that copy drifts
 from the app's by a single byte.
 
+## Three worlds that are their own record
+
+Each is a separate page, playable on its own. They share one idea: the world you
+look at is a **projection** of an append-only rapp/1 chain, so it can be rewound,
+forked from any frame, exported, and recorded together with the frames that
+produced it.
+
+| | |
+|---|---|
+| [`heist3d.html`](https://kody-w.github.io/workroom/heist3d.html) | *Tick/Tock: The DOGG Heist*, in three dimensions. It contains **no copy of the game's rules**: the real game runs in a frame, seals a frame per tick, and this page draws the newest one. It drives the game through the game's own buttons — no back door — and refuses to be quiet when the chain does not link. |
+| [`nexus3d.html`](https://kody-w.github.io/workroom/nexus3d.html) | A shared room. Every arrival, step, word and departure is one frame. Walk with WASD; your steps are frames too. Four residents work on their own **through the same door you do** — no privileged path, so an agent cannot put the room in a state you could not. |
+| [`arena.html`](https://kody-w.github.io/workroom/arena.html) | A first-person match. Every shot, hit and death is a frame, and a hit only exists downstream of the shot that named it. Replaying the chain reaches the same scoreboard, which is the whole claim. |
+
+Coordinates in all three are integer tenths of a metre, because §4 forbids floats:
+a world that cannot be canonicalized cannot be hashed, and a world that cannot be
+hashed is not a record. Interpolation between frames is a rendering concern and
+stays out of the chain.
+
+Each has a driver — `heistcheck.mjs`, `nexuscheck.mjs`, `arenacheck.mjs` — and
+each driver asks the same question in its own dialect: **can the write door write
+a frame the verify door would refuse?** In the arena that means a stranger cannot
+move, nobody teleports, a float position is refused, damage cannot come out of
+nobody, and a kill cannot happen without the damage that caused it. All refused,
+and none of it reaches the chain.
+
 ## Import / export
 
 Export hands you the whole stream as JSON. Paste it into another browser and it
