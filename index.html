@@ -222,14 +222,21 @@ async function mintStream() {
 }
 
 /* ── §7 the frame ────────────────────────────────────────────────────────── */
-function utcNow() {
+function utcNow(floor) {
   // exactly YYYY-MM-DDTHH:MM:SS.mmmZ — 24 bytes, three fractional digits
-  return new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+  let u = new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+  // §7.5 step 4 forbids time running backwards along a chain, and the reader
+  // enforced it while the writer did not — so one backward clock step (an NTP
+  // correction after sleep, a VM resume) wrote a frame the app then refused
+  // forever, with the board blank on every load and no way back but Reset.
+  // The comparison is bytewise on this fixed form, which is chronological.
+  if (floor && u < floor) u = floor;
+  return u;
 }
-async function buildFrame(streamId, seq, payload, prev) {
+async function buildFrame(streamId, seq, payload, prev, floorUtc) {
   const payload_hash = await H('rapp/1:particle', payload);
   const pre = {
-    spec: SPEC, kind: KIND, stream_id: streamId, seq, utc: utcNow(),
+    spec: SPEC, kind: KIND, stream_id: streamId, seq, utc: utcNow(floorUtc),
     payload, payload_hash,
     prev,                     // predecessor's payload_hash (the worldline link)
     prev_wave: null,          // §7.4: null on every memory stream, always
@@ -264,23 +271,39 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); retur
 // it has already verified. Without this the app cannot tell a rollback or a fork
 // from an ordinary import: both are perfectly valid chains, and the whole
 // append-only claim rests on refusing them.
+// §7.6 says per STREAM, and it matters: a single slot was discarded by an import
+// of any other stream, after which a rollback of the first was accepted as new.
+// The old single-slot shape is migrated on read.
+function loadHeads() {
+  const h = load(LS.head);
+  if (!isPlainObject(h)) return {};
+  if (typeof h.stream_id === 'string') return { [h.stream_id]: { seq: h.seq, frame_hash: h.frame_hash } };
+  return h;
+}
+// A high-water mark only ever rises. Lowering it destroys the evidence the
+// no-rollback rule depends on — which is what boot() used to do on every load.
 function rememberHead(list, stream) {
   const h = list[list.length - 1];
-  if (h) save(LS.head, { stream_id: stream, seq: h.seq, frame_hash: h.frame_hash });
+  if (!h) return;
+  const heads = loadHeads();
+  const known = heads[stream];
+  if (known && typeof known.seq === 'number' && h.seq < known.seq) return;
+  heads[stream] = { seq: h.seq, frame_hash: h.frame_hash };
+  save(LS.head, heads);
 }
-// Returns null when the candidate may replace what we have, or a reason to refuse.
+// Returns null when the candidate may be accepted, or a reason to refuse.
 function headObjection(list, stream) {
-  const head = load(LS.head);
-  if (!head || head.stream_id !== stream) return null;      // a different stream is a different record
+  const known = loadHeads()[stream];
+  if (!known) return null;
   const cand = list[list.length - 1];
   if (!cand) return 'that chain is empty';
-  if (cand.seq < head.seq) {
-    return `that is an older copy of this stream (seq ${cand.seq}, and ${head.seq} has already been verified here) — `
-         + 'importing it would roll the record back';
+  if (cand.seq < known.seq) {
+    return `that is an older copy of this stream (seq ${cand.seq}, and ${known.seq} has already been verified here) — `
+         + 'accepting it would roll the record back';
   }
-  const at = list[head.seq];
-  if (!at || at.frame_hash !== head.frame_hash) {
-    return `that chain forks from this one at seq ${head.seq} — the frame verified here is not the frame it carries`;
+  const at = list[known.seq];
+  if (!at || at.frame_hash !== known.frame_hash) {
+    return `that chain forks from this one at seq ${known.seq} — the frame verified here is not the frame it carries`;
   }
   return null;
 }
@@ -342,9 +365,21 @@ function project(list) {
 }
 
 /* ── appending — the only way anything ever changes ──────────────────────── */
-async function append(payload) {
+// Appends are serialised. seq and prev are read before an await, so two overlapping
+// calls built two frames at the same seq and the second overwrote the first — a
+// conflict inside one tab, which the cross-tab compare-and-swap cannot see.
+let appendQueue = Promise.resolve();
+function append(payload) {
+  const run = appendQueue.then(() => appendOne(payload));
+  appendQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+async function appendOne(payload) {
   const prevFrame = frames[frames.length - 1] || null;
-  const f = await buildFrame(streamId, frames.length, payload, prevFrame ? prevFrame.payload_hash : null);
+  const f = await buildFrame(streamId, frames.length, payload,
+                             prevFrame ? prevFrame.payload_hash : null,
+                             prevFrame ? prevFrame.utc : null);
   // Another tab of this same file holds its own copy of the chain. Writing our
   // whole array over theirs would delete frames they had already appended, with
   // no error anywhere — so notice it and refuse rather than destroy their work.
@@ -705,6 +740,18 @@ $('import').onclick = () => {
     const objection = headObjection(data.frames, data.stream_id);
     if (objection) { setStatus('refused: ' + objection, 'bad'); return; }
 
+    // The same compare-and-swap append() does. headObjection only speaks about the
+    // stream being imported, so without this a stale tab could replace a record
+    // another tab had already moved on from.
+    const dF = load(LS.frames), dS = load(LS.stream);
+    const dHead = Array.isArray(dF) && dF.length ? dF[dF.length - 1].frame_hash : null;
+    const mHead = frames.length ? frames[frames.length - 1].frame_hash : null;
+    if (dS !== streamId || dHead !== mHead) {
+      setStatus('refused: another tab has changed this record — reload first, so you can see '
+              + 'what you would be replacing.', 'bad');
+      return;
+    }
+
     let nextBoard;
     try { nextBoard = project(data.frames); }
     catch (e) { setStatus('refused: those frames cannot be replayed — ' + e.message, 'bad'); return; }
@@ -737,8 +784,10 @@ $('verify').onclick = async () => {
   const onDisk = load(LS.frames) || [];
   const same = JSON.stringify(onDisk) === JSON.stringify(frames);
   if (problems.length) setStatus(`${problems.length} problem(s): ${problems[0]}`, 'bad');
-  else if (!same) setStatus(`the ${frames.length} frames here verify, but storage holds ${onDisk.length} — `
-                          + 'this browser is not saving them. Export now.', 'bad');
+  else if (!same) setStatus(`the ${frames.length} frames here verify, but storage holds ${onDisk.length}. `
+                          + 'Either another tab has changed the record, or this browser is not saving. '
+                          + 'Reload to see what is actually stored — and Export first if this tab has work '
+                          + 'the other one does not.', 'bad');
   else setStatus(`all ${frames.length} frames verified — every hash recomputed, every link followed, and they are on disk`, 'ok');
 };
 $('rebuild').onclick = () => {
@@ -778,6 +827,14 @@ $('tab-about').onclick = () => {
   let problems;
   try { problems = await verifyChain(frames, streamId); }
   catch (e) { problems = ['could not be verified: ' + e.message]; }
+
+  // Storage is a presented head like any other, and it is the ingress the user hits
+  // every session — a restored profile, an old backup, a devtools paste. Refusing a
+  // rollback only at import left the one door that matters unguarded.
+  if (frames.length && !problems.length) {
+    const objection = headObjection(frames, streamId);
+    if (objection) problems = [objection];
+  }
 
   if (frames.length && problems.length) {
     board = { cards: {}, order: {} };

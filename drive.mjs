@@ -263,6 +263,53 @@ say('stale tab did not overwrite', String(streamAfter === otherStream));
 say('stale tab was told why', /another tab/i.test(await status()) ? 'yes' : 'NO — it said nothing');
 await other.close();
 
+// A clock that steps BACKWARDS must not produce a frame the reader then refuses.
+// The rule was enforced on read and not on write, so one NTP correction wrote a
+// record that failed verification on every load thereafter.
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.click('#reset'); await page.waitForTimeout(300);
+await add(0, 'before the clock moves'); await page.waitForTimeout(150);
+// shift only the CLOCK. Overriding toISOString globally also breaks the verifier's
+// own date round-trip, which would fail the test for a reason that is not the app's.
+await page.evaluate(() => {
+  const Real = Date;
+  const back = 10 * 60 * 1000;
+  window.Date = class extends Real {
+    constructor(...a) { if (a.length === 0) super(Real.now() - back); else super(...a); }
+    static now() { return Real.now() - back; }
+  };
+});
+await add(0, 'after the clock moves'); await page.waitForTimeout(200);
+await page.click('#verify'); await page.waitForTimeout(400);
+say('backward clock still verifies', /all \d+ frames verified/i.test(await status()) ? 'yes' : 'NO — ' + (await status()).slice(-48));
+
+// storage itself is a presented head: an older copy found on disk must be refused
+// on load, and the persisted high-water mark must NOT be lowered to match it
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.click('#reset'); await page.waitForTimeout(300);
+await add(0, 'one'); await add(0, 'two'); await add(0, 'three'); await page.waitForTimeout(200);
+const highSeq = await page.evaluate(() => {
+  const f = JSON.parse(localStorage.getItem('workroom.frames'));
+  localStorage.setItem('workroom.__older', JSON.stringify(f.slice(0, 2)));   // a valid older copy
+  return f[f.length - 1].seq;
+});
+await page.evaluate(() => {
+  localStorage.setItem('workroom.frames', localStorage.getItem('workroom.__older'));
+});
+await page.reload();
+await page.waitForFunction(() => document.querySelectorAll('.lane').length === 4);
+await page.waitForTimeout(500);
+const bootStatus = await status();
+say('rolled-back disk refused on load', /older copy|roll the record back|does not verify/i.test(bootStatus) ? 'yes' : 'NO — it blessed it');
+const headSeq = await page.evaluate(() => {
+  const h = JSON.parse(localStorage.getItem('workroom.head') || '{}');
+  const k = Object.keys(h)[0];
+  return k ? h[k].seq : null;
+});
+say('head was not demoted', String(headSeq === highSeq));
+
 await page.screenshot({ path: join(here, 'shot.png'), fullPage: false });
 await browser.close();
 
