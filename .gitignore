@@ -1,3 +1,7 @@
 node_modules
 .parity.py
 .parity-cases.json
+# throwaway probes left by review agents
+.probe*.mjs
+probe*.mjs
+.quota.mjs
