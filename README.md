@@ -1,5 +1,7 @@
 # The Workroom
 
+[![Verify](https://github.com/kody-w/workroom/actions/workflows/verify.yml/badge.svg)](https://github.com/kody-w/workroom/actions/workflows/verify.yml)
+
 A board for a team, where the board is not the record.
 
 Every change — a card added, moved, edited, removed — is one **rapp/1 frame**
@@ -127,6 +129,14 @@ Conformance, SPEC.md rev-6:
 npm ci
 npx playwright install chromium
 npm test
+```
+
+GitHub Actions runs that complete Chromium gate on every push and pull request.
+A second matrix boots every public page in Chromium, Firefox, and WebKit:
+
+```
+npx playwright install chromium firefox webkit
+npm run test:browser -- firefox
 ```
 
 The test command first checks byte-for-byte protocol parity, then drives real

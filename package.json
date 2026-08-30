@@ -10,7 +10,8 @@
     "test": "npm run test:parity && npm run test:board && npm run test:worlds",
     "test:parity": "node verify_parity.mjs",
     "test:board": "node drive.mjs && node seedcheck.mjs && node replaycheck.mjs && node playcheck.mjs && node runcheck.mjs && node forkcheck.mjs && node studiocheck.mjs && node gatecheck.mjs && node archivecheck.mjs",
-    "test:worlds": "node heistcheck.mjs && node nexuscheck.mjs && node arenacheck.mjs"
+    "test:worlds": "node heistcheck.mjs && node nexuscheck.mjs && node arenacheck.mjs",
+    "test:browser": "node browsercheck.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"
