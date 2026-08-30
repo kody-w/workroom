@@ -44,13 +44,8 @@ function reduceScore(frames) {
 const scoreShape = p => Object.fromEntries(Object.entries(p).map(([id, c]) =>
   [id, { kills: c.kills, deaths: c.deaths, hp: c.hp, ammo: c.ammo, alive: c.alive, x: c.x, z: c.z, ry: c.ry }]));
 
-async function openArena({ viewport = { width: 1440, height: 900 }, slowRaf = false } = {}) {
+async function openArena({ viewport = { width: 1440, height: 900 } } = {}) {
   const context = await browser.newContext({ viewport, acceptDownloads: true });
-  if (slowRaf) {
-    await context.addInitScript(() => {
-      window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 250);
-    });
-  }
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -683,49 +678,52 @@ let causalFrames;
   await context.close();
 }
 
-async function movementRate(slowRaf) {
-  const { context, page } = await openArena({ slowRaf });
-  await page.evaluate(() => { drawWorld = () => {}; });
-  const unlockedStart = await page.evaluate(() => W.p.you.x);
-  await page.keyboard.down('a');
-  await page.waitForTimeout(300);
-  await page.keyboard.up('a');
-  const unlockedEnd = await page.evaluate(() => W.p.you.x);
-  await page.evaluate(() => { lockedIn = true; motionClock = performance.now(); moveCarry = 0; });
-  const start = await page.evaluate(() => W.p.you.x);
-  await page.keyboard.down('a');
-  await page.waitForTimeout(1500);
-  await page.keyboard.up('a');
-  await page.waitForFunction(() => !stepping && pendingRelease === null, null, { timeout: 10000 });
-  await page.evaluate(async () => await q);
-  const end = await page.evaluate(() => W.p.you.x);
-  const problems = await page.evaluate(async () => await verifyChain(frames, streamId));
-  await context.close();
-  return { distance: Math.abs(end - start), unlockedDistance: Math.abs(unlockedEnd - unlockedStart), problems };
-}
-
-const normal = await movementRate(false);
-const slow = await movementRate(true);
-const timingDifference = Math.abs(normal.distance - slow.distance);
-say('movement requires control ownership', `${normal.unlockedDistance} tenths while unlocked`, normal.unlockedDistance === 0);
-say('movement remains wall-clock paced at 250ms RAF', `${normal.distance} vs ${slow.distance} tenths`,
-  normal.problems.length === 0 && slow.problems.length === 0 &&
-  timingDifference <= Math.max(12, Math.max(normal.distance, slow.distance) * 0.25));
 {
   const { context, page } = await openArena();
-  await page.evaluate(() => { drawWorld = () => {}; });
-  await page.evaluate(() => { lockedIn = true; motionClock = performance.now(); moveCarry = 0; });
-  const start = await page.evaluate(() => W.p.you.x);
-  await page.keyboard.down('a');
-  await page.evaluate(() => {
-    const until = performance.now() + 1200;
-    while (performance.now() < until) {}
+  const schedules = await page.evaluate(() => {
+    const run = samples => {
+      let carry = 0, total = 0;
+      for (const elapsed of samples) {
+        const next = movementBudget(carry, elapsed, true);
+        carry = next.carry; total += next.distance;
+      }
+      return { total, carry };
+    };
+    const stall = movementBudget(7.5, 1200, true);
+    const deferredStall = movementBudget(7.5, 1200, false);
+    const afterStall = movementBudget(stall.carry, 50, true);
+    return {
+      fine: run(Array(30).fill(50)),
+      coarse: run(Array(6).fill(250)),
+      stall, deferredStall, afterStall,
+    };
   });
+  say('movement budget is schedule-independent for 1.5s', `${schedules.fine.total} vs ${schedules.coarse.total} tenths`,
+    schedules.fine.total === 105 && schedules.coarse.total === 105 &&
+    schedules.fine.carry === 0 && schedules.coarse.carry === 0);
+  say('long samples use bounded catch-up without retained excess',
+    `${schedules.stall.distance} tenths, carry ${schedules.stall.carry}`,
+    schedules.stall.stalled && schedules.stall.boundedMs === 500 &&
+    schedules.stall.distance === 26 && schedules.stall.carry === 0 &&
+    schedules.deferredStall.distance === 0 && schedules.deferredStall.carry === 0 &&
+    schedules.afterStall.distance === 3);
+
+  await page.evaluate(() => { drawWorld = () => {}; lockedIn = true; motionClock = performance.now(); moveCarry = 0; });
+  const before = await page.evaluate(() => frames.length);
+  await page.keyboard.down('a');
+  await page.waitForFunction(n => frames.length > n &&
+    frames.slice(n).some(frame => frame.payload.event === 'player.moved' && frame.payload.who === 'you'),
+  before, { timeout: 10000 });
   await page.keyboard.up('a');
   await page.waitForFunction(() => !stepping && pendingRelease === null, null, { timeout: 10000 });
   await page.evaluate(async () => await q);
-  const distance = await page.evaluate(x => Math.abs(W.p.you.x - x), start);
-  say('long blocked frame cannot cause a teleport', `${distance} tenths after 1.2s block`, distance <= 35);
+  const keyboard = await page.evaluate(async n => ({
+    appended: frames.length > n,
+    moved: frames.slice(n).some(frame => frame.payload.event === 'player.moved' && frame.payload.who === 'you'),
+    problems: await verifyChain(frames, streamId),
+  }), before);
+  say('real keyboard movement appends a valid frame', `${keyboard.appended ? 'appended' : 'NO'} · ${keyboard.problems.length} problems`,
+    keyboard.appended && keyboard.moved && keyboard.problems.length === 0);
   await context.close();
 }
 

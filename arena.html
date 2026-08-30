@@ -229,6 +229,7 @@ const EVENTS = ['match.opened', 'player.spawned', 'player.moved', 'player.fired'
 const MAXHP = 100, DAMAGE = 34, MAG = 12;
 const MOVE_SPEED = 70;              // tenths of a metre per second
 const MAX_MOTION_SAMPLE_MS = 500;   // background tabs never cash in an unbounded pause
+const MAX_MOVE_STEP = 26;
 const FIRE_COOLDOWN_MS = 120;
 const RESPAWN_MS = 2600;
 const BODY_RADIUS = 0.36;
@@ -814,6 +815,16 @@ addEventListener('keyup', e => {
   } else held.delete(key);
 });
 
+function movementBudget(carry, elapsedMs, emit) {
+  const rawElapsed = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+  const stalled = rawElapsed > MAX_MOTION_SAMPLE_MS;
+  const boundedMs = Math.min(rawElapsed, MAX_MOTION_SAMPLE_MS);
+  const available = (stalled ? 0 : Math.max(0, carry)) + MOVE_SPEED * boundedMs / 1000;
+  if (!emit) return { distance: 0, carry: stalled ? 0 : Math.min(available, MAX_MOVE_STEP), boundedMs, stalled };
+  const distance = Math.min(MAX_MOVE_STEP, Math.floor(available));
+  return { distance, carry: stalled ? 0 : available - distance, boundedMs, stalled };
+}
+
 let lastStep = 0, motionClock = performance.now(), moveCarry = 0, stepping = false, pendingRelease = null;
 function flushPendingRelease() {
   if (!pendingRelease || stepping) return;
@@ -823,7 +834,7 @@ function flushPendingRelease() {
 async function stepYou(force, keySource, sampleTime) {
   const now = sampleTime ?? performance.now();
   if (stepping) return;
-  const elapsed = Math.min(MAX_MOTION_SAMPLE_MS, Math.max(0, now - motionClock));
+  const elapsed = Math.max(0, now - motionClock);
   motionClock = now;
   if (!lockedIn || !W || viewAt !== null || refused) { moveCarry = 0; return; }
   const me = W.p['you']; if (!me || !me.alive) return;
@@ -843,10 +854,10 @@ async function stepYou(force, keySource, sampleTime) {
     }
     return;
   }
-  moveCarry += MOVE_SPEED * elapsed / 1000;
-  if ((!force && now - lastStep < 100) || moveCarry < 1) return;
-  const distance = Math.min(26, Math.floor(moveCarry));
-  moveCarry -= distance;
+  const budget = movementBudget(moveCarry, elapsed, force || now - lastStep >= 100);
+  moveCarry = budget.carry;
+  if (budget.distance < 1) return;
+  const distance = budget.distance;
   lastStep = now;
   const len = Math.hypot(dx, dz); dx /= len; dz /= len;
   const s = Math.sin(yaw), c = Math.cos(yaw);

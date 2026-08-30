@@ -53,7 +53,14 @@ const report = (name, pass, detail) => {
   console.log(`${pass ? ' PASS' : '*FAIL'}  ${name.padEnd(34)}${detail ? ` — ${detail}` : ''}`);
   if (!pass) failed++;
 };
-const browser = await browserType.launch();
+const launchOptions = process.env.CI === 'true' ? { headless: false } : {};
+if (browserName === 'firefox') {
+  launchOptions.firefoxUserPrefs = {
+    'webgl.disabled': false,
+    'webgl.force-enabled': true,
+  };
+}
+const browser = await browserType.launch(launchOptions);
 
 async function open(path, ready) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
