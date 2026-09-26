@@ -1,5 +1,9 @@
 # The Workroom
 
+<!-- rapp1:network-header:start -->
+[![RAPP/1](https://kody-w.github.io/rapp-hive-public/portfolio/badges/workroom.svg)](https://github.com/kody-w/rapp-hive-public/blob/main/portfolio/repos/workroom.md) · **New to RAPP?** [Start here: get your Brainstem →](https://github.com/kody-w/rapp-installer#start-here)
+<!-- rapp1:network-header:end -->
+
 [![Verify](https://github.com/kody-w/workroom/actions/workflows/verify.yml/badge.svg)](https://github.com/kody-w/workroom/actions/workflows/verify.yml)
 
 A board for a team, where the board is not the record.
